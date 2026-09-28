@@ -43,7 +43,7 @@ class CandidateValidation(unittest.TestCase):
             differences = [float(np.mean(cv2.absdiff(decoded[i], decoded[j]))) for i, j in ((0, 1), (0, 2), (1, 2))]
             self.assertTrue(all(value > 2.0 for value in differences), differences)
             manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-            self.assertEqual("0.3.2", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
+            self.assertEqual("0.3.3", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
 
     def test_ascii_paths(self):
         self.run_case("ascii input", "ascii output")
@@ -155,6 +155,15 @@ class CandidateValidation(unittest.TestCase):
                 self.skipTest(f"Tk desktop is unavailable: {exc}")
             try:
                 self.assertEqual(TEMPLATE_MODE, app.source_mode.get())
+                self.assertEqual("CINEMATIC CHILL", app.typography_style.get())
+                self.assertEqual(6, len(app.typography_combo["values"]))
+                self.assertTrue(app.auto_two_line.get()); self.assertTrue(app.emphasize_keyword.get())
+                self.assertEqual("Auto", app.title_size.get())
+                app.channel.set("OLD POP LOUNGE"); app.update()
+                self.assertEqual(6, len(app.typography_combo["values"]))
+                self.assertEqual("SENIOR CLASSIC", app.typography_style.get())
+                app.channel.set("Tokyo Chill"); app.update()
+                self.assertEqual("CINEMATIC CHILL", app.typography_style.get())
                 self.assertTrue(app.save_all_button.instate(["disabled"]))
                 app.src.set(str(first)); app.update()
                 self.assertIn("권장 모드", app.mode_guard.get())
@@ -225,6 +234,15 @@ class CandidateValidation(unittest.TestCase):
                 self.assertGreater(float(cv2.absdiff(small[left], small[right]).mean()), 7.0)
             self.assertFalse(candidates_too_similar(candidates))
             self.assertGreater(float(cv2.absdiff(candidates[2].image, _full_frame_for_test(image)).mean()), 1.0)
+            impact = create_candidate_images(source, "Tokyo Chill", TEMPLATE_MODE,
+                protagonist=(0.23, 0.35), counterpart=(0.71, 0.34), story_type="남자 이야기",
+                episode="EP.012", title="東京の思い出 한글", subtitle="A story across the night",
+                typography_style="JAPANESE IMPACT", auto_two_line=True, emphasize_keyword=True,
+                keyword="思い出", title_size="Large")
+            self.assertEqual("japanese_impact", impact[0].typography["typography_style"])
+            self.assertEqual("思い出", impact[0].typography["title"]["keyword"])
+            self.assertEqual(2, len(impact[0].typography["title"]["lines"]))
+            self.assertGreater(float(cv2.absdiff(impact[0].image, candidates[0].image).mean()), 3.0)
 
     def test_old_pop_template_uses_calm_scene_and_outputs_three(self):
         with tempfile.TemporaryDirectory() as raw:

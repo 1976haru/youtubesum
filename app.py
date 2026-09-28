@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 from motion_engine import PRESETS, render
+from typography_engine import TYPOGRAPHY_PRESETS, preset_names
 from thumbnail_engine import (APP_VERSION, COMPLETED_MODE, RAW_MODE, TEMPLATE_MODE,
                               candidate_similarities, candidates_too_similar,
                               create_candidate_images, generate_candidates, record_test,
@@ -44,6 +45,11 @@ class App(tk.Tk):
         self.template_episode = tk.StringVar(value="EP.001")
         self.template_title = tk.StringVar(value="思い出の夜")
         self.template_subtitle = tk.StringVar(value="A quiet story in the city")
+        self.typography_style = tk.StringVar(value="CINEMATIC CHILL")
+        self.auto_two_line = tk.BooleanVar(value=True)
+        self.emphasize_keyword = tk.BooleanVar(value=True)
+        self.keyword = tk.StringVar()
+        self.title_size = tk.StringVar(value="Auto")
         self.reference_src = tk.StringVar()
         self.preset = tk.StringVar(value="Tokyo Chill - Rain"); self.duration = tk.IntVar(value=8)
         self.intensity = tk.DoubleVar(value=1.0); self.status = tk.StringVar(value="이미지를 선택하세요.")
@@ -60,8 +66,11 @@ class App(tk.Tk):
         ttk.Label(self, textvariable=self.status, wraplength=1100).pack(pady=(0, 8))
         self.src.trace_add("write", self._source_changed)
         self.source_mode.trace_add("write", lambda *_: self._update_mode_guard())
+        self.channel.trace_add("write", lambda *_: self._update_typography_styles())
         self.focus_mode.trace_add("write", lambda *_: self._update_focus_state())
-        for variable in (self.src, self.source_mode, self.focus_mode, self.channel, self.story_type, self.template_episode, self.template_title, self.template_subtitle):
+        for variable in (self.src, self.source_mode, self.focus_mode, self.channel, self.story_type, self.template_episode,
+                         self.template_title, self.template_subtitle, self.typography_style, self.auto_two_line,
+                         self.emphasize_keyword, self.keyword, self.title_size):
             variable.trace_add("write", self._invalidate_candidates)
         self._update_mode_guard()
 
@@ -128,6 +137,22 @@ class App(tk.Tk):
             self.mode_guard.set("권장 모드 · 텍스트 없는 원본을 재구도하고 입력한 글자를 새 레이어로 렌더링합니다")
         else:
             self.mode_guard.set("원본 이미지 모드 · 기본 구도 변경")
+        self._update_typography_controls()
+
+    def _update_typography_styles(self):
+        names = preset_names(self.channel.get())
+        if hasattr(self, "typography_combo"):
+            self.typography_combo.configure(values=names)
+        if self.typography_style.get() not in names and names:
+            self.typography_style.set(names[0])
+        self._invalidate_candidates()
+
+    def _update_typography_controls(self):
+        if not hasattr(self, "typography_controls"):
+            return
+        state = "normal" if self.source_mode.get() == TEMPLATE_MODE else "disabled"
+        for control in self.typography_controls:
+            control.configure(state=state)
 
     def _update_focus_state(self):
         main = "수동 지정" if self.protagonist is not None else self.focus_mode.get()
@@ -201,6 +226,24 @@ class App(tk.Tk):
         ttk.Combobox(row, textvariable=self.focus_mode, values=["자동", "왼쪽 인물", "오른쪽 인물", "두 사람"], state="readonly", width=12).pack(side="left")
         ttk.Label(row, text="이야기", width=7).pack(side="left", padx=(8, 0))
         ttk.Combobox(row, textvariable=self.story_type, values=["자동", "남자 이야기", "여자 이야기", "두 사람 이야기"], state="readonly", width=13).pack(side="left")
+        type_row = ttk.Frame(tab); type_row.pack(fill="x", padx=16, pady=(2, 2))
+        ttk.Label(type_row, text="타이포그래피", width=12).pack(side="left")
+        self.typography_combo = ttk.Combobox(type_row, textvariable=self.typography_style,
+            values=preset_names(self.channel.get()), state="readonly", width=24)
+        self.typography_combo.pack(side="left", padx=(0, 10))
+        ttk.Label(type_row, text="제목 크기").pack(side="left")
+        self.title_size_combo = ttk.Combobox(type_row, textvariable=self.title_size,
+            values=["Auto", "Small", "Medium", "Large"], state="readonly", width=10)
+        self.title_size_combo.pack(side="left", padx=(4, 10))
+        self.two_line_check = ttk.Checkbutton(type_row, text="자동 2줄 분할", variable=self.auto_two_line)
+        self.two_line_check.pack(side="left", padx=4)
+        self.keyword_check = ttk.Checkbutton(type_row, text="핵심어 강조", variable=self.emphasize_keyword)
+        self.keyword_check.pack(side="left", padx=4)
+        ttk.Label(type_row, text="핵심어").pack(side="left", padx=(6, 2))
+        self.keyword_entry = ttk.Entry(type_row, textvariable=self.keyword, width=18)
+        self.keyword_entry.pack(side="left")
+        self.typography_controls = [self.typography_combo, self.title_size_combo, self.two_line_check,
+                                    self.keyword_check, self.keyword_entry]
         text_row = ttk.Frame(tab); text_row.pack(fill="x", padx=16, pady=(2, 4))
         for label, variable, width in (("EP", self.template_episode, 10), ("메인 제목", self.template_title, 32), ("영문/부제", self.template_subtitle, 34)):
             ttk.Label(text_row, text=label).pack(side="left", padx=(0, 4))
@@ -255,10 +298,18 @@ class App(tk.Tk):
         def work():
             self.status.set("얼굴/구도를 분석하고 있습니다..."); self.update_idletasks()
             self.candidates = create_candidate_images(self.src.get(), self.channel.get(), self.source_mode.get(), self.focus_mode.get(), self.protagonist, self.counterpart,
-                                                      self.story_type.get(), self.template_episode.get(), self.template_title.get(), self.template_subtitle.get()); self.preview_refs.clear()
+                                                      self.story_type.get(), self.template_episode.get(), self.template_title.get(), self.template_subtitle.get(),
+                                                      self.typography_style.get(), self.auto_two_line.get(), self.emphasize_keyword.get(),
+                                                      self.keyword.get(), self.title_size.get()); self.preview_refs.clear()
             for candidate, image_label, note_label in zip(self.candidates, self.preview_labels, self.note_labels):
                 photo = ImageTk.PhotoImage(Image.fromarray(candidate.image[:, :, ::-1]).resize((340, 191), Image.Resampling.LANCZOS))
-                self.preview_refs.append(photo); image_label.configure(image=photo, text=""); note_label.configure(text=candidate.composition)
+                self.preview_refs.append(photo); image_label.configure(image=photo, text="")
+                type_note = candidate.typography or {}
+                title_meta = type_note.get("title", {})
+                style_key = type_note.get("typography_style")
+                style_name = TYPOGRAPHY_PRESETS[style_key].name if style_key in TYPOGRAPHY_PRESETS else ""
+                detail = f"{style_name} · {title_meta.get('font_size', '')} px · {title_meta.get('contrast', '')} · {title_meta.get('keyword', '')}"
+                note_label.configure(text=candidate.composition + "\n" + detail)
             scores = candidate_similarities(self.candidates)
             score_text = " · ".join(f"{pair} 차이 {100 * (1 - score):.1f}%" for pair, score in scores.items())
             if candidates_too_similar(self.candidates):
