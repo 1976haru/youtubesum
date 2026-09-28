@@ -133,9 +133,21 @@ def _grade(image, mode):
 def _full_frame(image):
     """Preserve the whole thumbnail. Never crop baked-in text/logo pixels."""
     ih, iw = image.shape[:2]
+    if (iw, ih) == OUTPUT_SIZE:
+        return image.copy()
     if abs((iw / ih) - (16 / 9)) < 0.01:
         return cv2.resize(image, OUTPUT_SIZE, interpolation=cv2.INTER_LANCZOS4)
     return _fit_on_canvas(image, "matte")
+
+
+def _map_point_to_full_frame(point, source_shape):
+    """Map normalized input coordinates through the no-crop fit onto the 16:9 canvas."""
+    ih, iw = source_shape[:2]
+    out_w, out_h = OUTPUT_SIZE
+    scale = min(out_w / iw, out_h / ih)
+    drawn_w, drawn_h = iw * scale, ih * scale
+    pad_x, pad_y = (out_w - drawn_w) / 2, (out_h - drawn_h) / 2
+    return ((point[0] * drawn_w + pad_x) / out_w, (point[1] * drawn_h + pad_y) / out_h)
 
 
 def _soft_focus_mask(shape, centers, radius_x=0.22, radius_y=0.34):
@@ -165,9 +177,9 @@ def _manual_centers(focus_mode, faces, image_shape):
     return [(0.50, 0.46)]
 
 
-def _emphasize_subject(base, centers, strength=0.26, warm=False):
+def _emphasize_subject(base, centers, strength=0.26, warm=False, radius_x=0.22, radius_y=0.34):
     """Non-destructive full-frame emphasis: no crop, no text removal."""
-    mask = _soft_focus_mask(base.shape, centers)[:, :, None]
+    mask = _soft_focus_mask(base.shape, centers, radius_x, radius_y)[:, :, None]
     blurred = cv2.GaussianBlur(base, (0, 0), 2.0)
     sharp = cv2.addWeighted(base, 1.22, blurred, -0.22, 0)
     f = sharp.astype(np.float32)
@@ -179,7 +191,7 @@ def _emphasize_subject(base, centers, strength=0.26, warm=False):
     return np.clip(base.astype(np.float32) * (1 - mask * strength) + enhanced.astype(np.float32) * (mask * strength), 0, 255).astype(np.uint8)
 
 
-def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동"):
+def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동", protagonist=None, counterpart=None):
     image = _read(src)
     faces = _detect_faces(image)
     specs = STRATEGIES.get(channel)
@@ -191,18 +203,30 @@ def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 �
         # Face boxes are mapped approximately after full-frame resize only; manual left/right selection
         # remains available when side-profile detection misses the intended protagonist.
         base_faces = _detect_faces(base)
-        centers = _manual_centers(focus_mode, base_faces, base.shape)
-        a_image = _emphasize_subject(base, centers, strength=0.34, warm=False)
-        if focus_mode == "왼쪽 인물":
-            relation_centers = [(0.28, 0.46), (0.72, 0.46)]
-        elif focus_mode == "오른쪽 인물":
-            relation_centers = [(0.72, 0.46), (0.28, 0.46)]
+        mapped_protagonist = _map_point_to_full_frame(protagonist, image.shape) if protagonist is not None else None
+        mapped_counterpart = _map_point_to_full_frame(counterpart, image.shape) if counterpart is not None else None
+        if mapped_protagonist is not None:
+            centers = [tuple(mapped_protagonist)]
+        else:
+            centers = _manual_centers(focus_mode, base_faces, base.shape)
+        a_image = _emphasize_subject(base, centers[:1], strength=0.55, warm=False, radius_x=0.17, radius_y=0.25)
+        if mapped_counterpart is not None:
+            relation_centers = [tuple(mapped_protagonist)] if mapped_protagonist is not None else centers[:1]
+            relation_centers.append(tuple(mapped_counterpart))
+            if mapped_protagonist is not None:
+                relation_centers.append(((mapped_protagonist[0] + mapped_counterpart[0]) / 2,
+                                         (mapped_protagonist[1] + mapped_counterpart[1]) / 2))
+            b_image = _emphasize_subject(base, relation_centers, strength=0.42, warm=True, radius_x=0.26, radius_y=0.37)
+            b_note = "완성 썸네일 전체/글자 보존 · 지정한 두 인물 관계 강조 · 크롭 금지"
+        elif mapped_protagonist is not None:
+            b_image = _emphasize_subject(base, centers[:1], strength=0.32, warm=True, radius_x=0.39, radius_y=0.45)
+            b_note = "완성 썸네일 전체/글자 보존 · 지정 주인공 주변 감정 여백 강조 · 크롭 금지"
         else:
             relation_centers = centers if len(centers) > 1 else [(0.35, 0.46), (0.68, 0.46)]
-        b_image = _emphasize_subject(base, relation_centers, strength=0.22, warm=True)
+            b_image = _emphasize_subject(base, relation_centers, strength=0.30, warm=True, radius_x=0.30, radius_y=0.40)
+            b_note = "완성 썸네일 전체/글자 보존 · 자동 관계/감정 강조 · 크롭 금지"
         c_image = base.copy()
         a_note = f"완성 썸네일 전체/글자 보존 · 주인공 강조({focus_mode}) · 크롭 금지"
-        b_note = "완성 썸네일 전체/글자 보존 · 관계/감정 강조 · 크롭 금지"
         c_note = "완성 썸네일 원본 전체 보존 · STORY/SCENERY 기준"
         images = [a_image, b_image, c_image]
         return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
@@ -224,6 +248,20 @@ def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 �
         b_image, b_note = _fit_on_canvas(image, "blur", inset=0.90), "검출 신뢰 낮음 · 전체 원본 감정/여백 구도"
     c_image, c_note = _fit_on_canvas(image, "blur"), "전체 원본 보존 · 배경/스토리 구도"
     images = [_grade(a_image, "person"), _grade(b_image, "emotion"), _grade(c_image, "story")]
+    # Raw images honor a manual protagonist point when face detection missed a profile.
+    if protagonist is not None and source_mode != "완성 썸네일(글자 보호)":
+        full = _full_frame(image)
+        mapped_protagonist = _map_point_to_full_frame(protagonist, image.shape)
+        mapped_counterpart = _map_point_to_full_frame(counterpart, image.shape) if counterpart is not None else None
+        a_image = _emphasize_subject(full, [tuple(mapped_protagonist)], strength=0.42)
+        if mapped_counterpart is not None:
+            b_image = _emphasize_subject(full, [tuple(mapped_protagonist), tuple(mapped_counterpart)], strength=0.42, warm=True)
+        else:
+            b_image = _emphasize_subject(full, [tuple(mapped_protagonist)], strength=0.25, warm=True)
+        images = [a_image, b_image, c_image]
+        a_note = "수동 지정 인물 강조 · 원본 안전 구도"
+        b_note = "지정 인물 관계/감정 강조 · 원본 안전 구도"
+        return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
     return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
 
 
@@ -249,8 +287,8 @@ def save_candidates(src, out_dir, candidates, selected_code=None):
     return saved
 
 
-def generate_candidates(src, out_dir, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동"):
-    return save_candidates(src, out_dir, create_candidate_images(src, channel, source_mode, focus_mode))
+def generate_candidates(src, out_dir, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동", protagonist=None, counterpart=None):
+    return save_candidates(src, out_dir, create_candidate_images(src, channel, source_mode, focus_mode, protagonist, counterpart))
 
 
 def record_test(db_path, episode, channel, a, b, c, winner, notes=""):

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, random, subprocess, shutil, tempfile
+import math, random, subprocess, shutil, tempfile, sys
 from pathlib import Path
 import cv2, numpy as np
 
@@ -74,10 +74,27 @@ def _read_unicode(path):
     if img is None: raise ValueError(f'이미지를 읽을 수 없습니다: {path}')
     return img
 
+def _ffmpeg_executable():
+    """Prefer the packaged FFmpeg binary; dev runs may use a PATH installation."""
+    roots=[]
+    if getattr(sys, 'frozen', False):
+        # LGPL replaceability: users may place a compatible FFmpeg bundle beside the EXE.
+        roots.append(Path(sys.executable).resolve().parent / 'ydts_ffmpeg')
+        roots.append(Path(getattr(sys, '_MEIPASS', Path(sys.executable).resolve().parent)) / 'ydts_ffmpeg')
+    else:
+        roots.append(Path(__file__).resolve().parent / 'vendor' / 'ffmpeg' / 'bin')
+        # Also accept the pinned archive's expanded directory during development.
+        for root in (Path(__file__).resolve().parent / 'vendor' / 'ffmpeg').glob('*/bin'):
+            roots.append(root)
+    for root in roots:
+        candidate=root/'ffmpeg.exe'
+        if candidate.is_file(): return str(candidate)
+    return shutil.which('ffmpeg')
+
 def render(input_path, output_path, preset, duration=8, fps=30, width=1920,height=1080,intensity=1.0):
-    ff=shutil.which('ffmpeg')
+    ff=_ffmpeg_executable()
     if not ff:
-        raise RuntimeError('FFmpeg를 찾을 수 없습니다. ffmpeg.org에서 설치한 뒤 PATH에 추가하고 앱을 다시 실행하세요.')
+        raise RuntimeError('Motion 인코더를 찾을 수 없습니다. 앱을 다시 설치하거나 재빌드해 주세요.')
     img=_read_unicode(input_path)
     base=_cover(img,width,height); p=PRESETS[preset].copy()
     for k in ('zoom','pan','rain','snow','bokeh','grain','warm'): p[k]*=intensity
@@ -94,7 +111,7 @@ def render(input_path, output_path, preset, duration=8, fps=30, width=1920,heigh
             f=_camera(base,loop_t,p); f=_bokeh(f,31,p['bokeh'],phase); f=_rain(f,17,p['rain'],phase); f=_snow(f,23,p['snow'],phase); f=_finish(f,p,phase,i+99)
             out.write(f)
         out.release()
-        cmd=[ff,'-y','-i',str(temp),'-c:v','libx264','-preset','medium','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(output_path)]
+        cmd=[ff,'-y','-i',str(temp),'-c:v','h264_mf','-b:v','8M','-pix_fmt','yuv420p','-movflags','+faststart',str(output_path)]
         try: subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,check=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         except subprocess.CalledProcessError as exc:
             detail=exc.stderr.decode(errors='replace')[-1200:] if exc.stderr else ''
