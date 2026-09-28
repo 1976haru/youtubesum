@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-APP_VERSION = "0.3"
+APP_VERSION = "0.3.1"
 OUTPUT_SIZE = (1280, 720)
 STRATEGIES = {
     "Tokyo Chill": [("A_PERSON", "A · PERSON / 인물 중심"), ("B_EMOTION", "B · EMOTION / 감정·여백"), ("C_STORY", "C · STORY / 공간·이야기")],
@@ -130,12 +130,83 @@ def _grade(image, mode):
     return np.clip(f, 0, 255).astype(np.uint8)
 
 
-def create_candidate_images(src, channel):
+def _full_frame(image):
+    """Preserve the whole thumbnail. Never crop baked-in text/logo pixels."""
+    ih, iw = image.shape[:2]
+    if abs((iw / ih) - (16 / 9)) < 0.01:
+        return cv2.resize(image, OUTPUT_SIZE, interpolation=cv2.INTER_LANCZOS4)
+    return _fit_on_canvas(image, "matte")
+
+
+def _soft_focus_mask(shape, centers, radius_x=0.22, radius_y=0.34):
+    h, w = shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    mask = np.zeros((h, w), dtype=np.float32)
+    for cx, cy in centers:
+        dx = (xx - cx * w) / max(1.0, radius_x * w)
+        dy = (yy - cy * h) / max(1.0, radius_y * h)
+        mask = np.maximum(mask, np.exp(-(dx * dx + dy * dy) * 1.6))
+    return cv2.GaussianBlur(mask, (0, 0), 13)
+
+
+def _manual_centers(focus_mode, faces, image_shape):
+    if focus_mode == "왼쪽 인물":
+        return [(0.28, 0.46)]
+    if focus_mode == "오른쪽 인물":
+        return [(0.72, 0.46)]
+    if focus_mode == "두 사람":
+        return [(0.28, 0.46), (0.72, 0.46)]
+    h, w = image_shape[:2]
+    if faces:
+        centers = []
+        for x, y, fw, fh in faces[:2]:
+            centers.append(((x + fw / 2) / w, (y + fh / 2) / h))
+        return centers
+    return [(0.50, 0.46)]
+
+
+def _emphasize_subject(base, centers, strength=0.26, warm=False):
+    """Non-destructive full-frame emphasis: no crop, no text removal."""
+    mask = _soft_focus_mask(base.shape, centers)[:, :, None]
+    blurred = cv2.GaussianBlur(base, (0, 0), 2.0)
+    sharp = cv2.addWeighted(base, 1.22, blurred, -0.22, 0)
+    f = sharp.astype(np.float32)
+    f = (f - 127.5) * (1.0 + strength * 0.18) + 127.5
+    if warm:
+        f[:, :, 2] *= 1.0 + strength * 0.05
+        f[:, :, 0] *= 1.0 - strength * 0.025
+    enhanced = np.clip(f, 0, 255).astype(np.uint8)
+    return np.clip(base.astype(np.float32) * (1 - mask * strength) + enhanced.astype(np.float32) * (mask * strength), 0, 255).astype(np.uint8)
+
+
+def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동"):
     image = _read(src)
     faces = _detect_faces(image)
     specs = STRATEGIES.get(channel)
     if specs is None:
         raise ValueError(f"지원하지 않는 채널입니다: {channel}")
+
+    if source_mode == "완성 썸네일(글자 보호)":
+        base = _full_frame(image)
+        # Face boxes are mapped approximately after full-frame resize only; manual left/right selection
+        # remains available when side-profile detection misses the intended protagonist.
+        base_faces = _detect_faces(base)
+        centers = _manual_centers(focus_mode, base_faces, base.shape)
+        a_image = _emphasize_subject(base, centers, strength=0.34, warm=False)
+        if focus_mode == "왼쪽 인물":
+            relation_centers = [(0.28, 0.46), (0.72, 0.46)]
+        elif focus_mode == "오른쪽 인물":
+            relation_centers = [(0.72, 0.46), (0.28, 0.46)]
+        else:
+            relation_centers = centers if len(centers) > 1 else [(0.35, 0.46), (0.68, 0.46)]
+        b_image = _emphasize_subject(base, relation_centers, strength=0.22, warm=True)
+        c_image = base.copy()
+        a_note = f"완성 썸네일 전체/글자 보존 · 주인공 강조({focus_mode}) · 크롭 금지"
+        b_note = "완성 썸네일 전체/글자 보존 · 관계/감정 강조 · 크롭 금지"
+        c_note = "완성 썸네일 원본 전체 보존 · STORY/SCENERY 기준"
+        images = [a_image, b_image, c_image]
+        return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
+
     person_crop = emotion_crop = None
     if faces:
         focus = (min(b[0] for b in faces), min(b[1] for b in faces),
@@ -178,8 +249,8 @@ def save_candidates(src, out_dir, candidates, selected_code=None):
     return saved
 
 
-def generate_candidates(src, out_dir, channel):
-    return save_candidates(src, out_dir, create_candidate_images(src, channel))
+def generate_candidates(src, out_dir, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동"):
+    return save_candidates(src, out_dir, create_candidate_images(src, channel, source_mode, focus_mode))
 
 
 def record_test(db_path, episode, channel, a, b, c, winner, notes=""):
