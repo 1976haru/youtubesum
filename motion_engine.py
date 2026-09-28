@@ -65,9 +65,17 @@ def _finish(frame,p,t,seed):
         f=frame.astype(np.float32); f += noise[:,:,None]; frame=np.clip(f,0,255).astype(np.uint8)
     return frame
 
+def _read_unicode(path):
+    try:
+        data=np.fromfile(str(path),dtype=np.uint8)
+        img=cv2.imdecode(data,cv2.IMREAD_COLOR)
+    except Exception as e:
+        raise ValueError(f'이미지를 읽을 수 없습니다: {path}\n{e}') from e
+    if img is None: raise ValueError(f'이미지를 읽을 수 없습니다: {path}')
+    return img
+
 def render(input_path, output_path, preset, duration=8, fps=30, width=1920,height=1080,intensity=1.0):
-    img=cv2.imread(str(input_path),cv2.IMREAD_COLOR)
-    if img is None: raise ValueError('이미지를 읽을 수 없습니다.')
+    img=_read_unicode(input_path)
     base=_cover(img,width,height); p=PRESETS[preset].copy()
     for k in ('zoom','pan','rain','snow','bokeh','grain','warm'): p[k]*=intensity
     temp=Path(output_path).with_suffix('.silent.mp4')

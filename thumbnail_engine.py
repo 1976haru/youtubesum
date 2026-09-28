@@ -11,9 +11,24 @@ STRATEGIES={
 }
 
 def _read(path):
- im=cv2.imread(str(path),cv2.IMREAD_COLOR)
- if im is None: raise ValueError('이미지를 읽을 수 없습니다.')
+ path=Path(path)
+ try:
+  data=np.fromfile(str(path),dtype=np.uint8)
+  im=cv2.imdecode(data,cv2.IMREAD_COLOR)
+ except Exception as e:
+  raise ValueError(f'이미지를 읽을 수 없습니다: {path}\n{e}') from e
+ if im is None: raise ValueError(f'이미지를 읽을 수 없습니다: {path}')
  return im
+
+def _write_image(path,im,jpeg_quality=95):
+ path=Path(path); path.parent.mkdir(parents=True,exist_ok=True)
+ ext=path.suffix.lower() or '.jpg'
+ params=[int(cv2.IMWRITE_JPEG_QUALITY),jpeg_quality] if ext in ('.jpg','.jpeg') else []
+ ok,buf=cv2.imencode(ext,im,params)
+ if not ok: raise ValueError(f'이미지 인코딩 실패: {path}')
+ buf.tofile(str(path))
+ if not path.exists() or path.stat().st_size==0: raise IOError(f'이미지 저장 검증 실패: {path}')
+ return path
 
 def _cover(im,w=1280,h=720,scale=1.0,x_bias=0.5,y_bias=0.5):
  ih,iw=im.shape[:2]; s=max(w/iw,h/ih)*scale; nw,nh=max(w,int(iw*s)),max(h,int(ih*s))
@@ -39,7 +54,7 @@ def generate_candidates(src,out_dir,channel):
  params={'close':(1.16,.5,.45),'medium':(1.06,.5,.48),'wide':(1.0,.5,.5)}
  for code,label,mode in specs:
   scale,xb,yb=params[mode]; x=_grade(_cover(im,scale=scale,x_bias=xb,y_bias=yb),mode)
-  p=out/f'{src.stem}_{code}.jpg'; cv2.imwrite(str(p),x,[int(cv2.IMWRITE_JPEG_QUALITY),95]); made.append((code,label,str(p)))
+  p=out/f'{src.stem}_{code}.jpg'; _write_image(p,x,95); made.append((code,label,str(p)))
  manifest={'version':'0.2','channel':channel,'source':str(src),'created_at':time.strftime('%Y-%m-%d %H:%M:%S'),
            'candidates':[{'code':a,'strategy':b,'file':c} for a,b,c in made],
            'note':'후보는 단순 색상 변경이 아니라 프레이밍/메시지 역할을 분리한다. v0.2는 원본 보존형이며 생성형 AI를 사용하지 않는다.'}
