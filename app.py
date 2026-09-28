@@ -12,6 +12,8 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 from motion_engine import PRESETS, render
 from typography_engine import TYPOGRAPHY_PRESETS, preset_names
+from typography.linebreak_engine import choose_line_break
+from typography.storage_assets import load_image_storage_assets
 from thumbnail_engine import (APP_VERSION, COMPLETED_MODE, RAW_MODE, TEMPLATE_MODE,
                               candidate_similarities, candidates_too_similar,
                               create_candidate_images, generate_candidates, record_test,
@@ -37,7 +39,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"YouTube Dynamic Thumbnail Studio v{APP_VERSION}")
-        self.geometry("1240x880"); self.minsize(1120, 800)
+        self.geometry("1360x1020"); self.minsize(1200, 900)
         self.src = tk.StringVar(); self.channel = tk.StringVar(value="Tokyo Chill")
         self.source_mode = tk.StringVar(value=TEMPLATE_MODE)
         self.focus_mode = tk.StringVar(value="자동")
@@ -45,11 +47,18 @@ class App(tk.Tk):
         self.template_episode = tk.StringVar(value="EP.001")
         self.template_title = tk.StringVar(value="思い出の夜")
         self.template_subtitle = tk.StringVar(value="A quiet story in the city")
-        self.typography_style = tk.StringVar(value="CINEMATIC CHILL")
+        self.typography_style = tk.StringVar(value="Japanese Impact")
         self.auto_two_line = tk.BooleanVar(value=True)
         self.emphasize_keyword = tk.BooleanVar(value=True)
         self.keyword = tk.StringVar()
-        self.title_size = tk.StringVar(value="Auto")
+        self.title_size = tk.IntVar(value=108)
+        self.outline_thickness = tk.DoubleVar(value=10.0)
+        self.glow_intensity = tk.DoubleVar(value=1.0)
+        self.shadow_intensity = tk.DoubleVar(value=0.9)
+        self.manual_breaks = tk.StringVar()
+        self.line_break_preview = tk.StringVar(value="줄바꿈 미리보기: 제목을 입력하세요")
+        self.safe_zone_overlay = tk.BooleanVar(value=False)
+        self.selected_preview_var = tk.StringVar(value="A")
         self.reference_src = tk.StringVar()
         self.preset = tk.StringVar(value="Tokyo Chill - Rain"); self.duration = tk.IntVar(value=8)
         self.intensity = tk.DoubleVar(value=1.0); self.status = tk.StringVar(value="이미지를 선택하세요.")
@@ -70,8 +79,13 @@ class App(tk.Tk):
         self.focus_mode.trace_add("write", lambda *_: self._update_focus_state())
         for variable in (self.src, self.source_mode, self.focus_mode, self.channel, self.story_type, self.template_episode,
                          self.template_title, self.template_subtitle, self.typography_style, self.auto_two_line,
-                         self.emphasize_keyword, self.keyword, self.title_size):
+                         self.emphasize_keyword, self.keyword, self.title_size, self.outline_thickness,
+                         self.glow_intensity, self.shadow_intensity, self.manual_breaks, self.safe_zone_overlay):
             variable.trace_add("write", self._invalidate_candidates)
+        self.template_title.trace_add("write", lambda *_: self._update_line_break_preview())
+        self.manual_breaks.trace_add("write", lambda *_: self._update_line_break_preview())
+        self.title_size.trace_add("write", lambda *_: self._update_line_break_preview())
+        self.auto_two_line.trace_add("write", lambda *_: self._update_line_break_preview())
         self._update_mode_guard()
 
     def report_callback_exception(self, exc, value, tb):
@@ -114,9 +128,40 @@ class App(tk.Tk):
         if self.focus_source and self.src.get() != self.focus_source:
             self.protagonist = self.counterpart = self.focus_source = None
             self._update_focus_state()
+        if self.src.get():
+            try:
+                assets = load_image_storage_assets(self.src.get())
+                if assets.reference_thumbnail:
+                    self.reference_src.set(str(assets.reference_thumbnail))
+            except Exception:
+                pass
+
+    def _update_line_break_preview(self):
+        text = " ".join(self.template_title.get().split())
+        if not text:
+            self.line_break_preview.set("줄바꿈 미리보기: 제목을 입력하세요")
+            return
+        size = max(64, int(self.title_size.get()))
+        width_limit = 780 / max(1, size)
+        def width(line):
+            return sum(1.0 if ord(char) > 0x2E7F else 0.56 for char in line)
+        manual = self.manual_breaks.get().replace("|", "\n")
+        choice = choose_line_break(text, width, width_limit, 3 if self.auto_two_line.get() else 1, manual)
+        self.line_break_preview.set("줄바꿈 미리보기: " + " / ".join(choice.lines))
+
+    def show_selected_preview(self, index: int):
+        if not hasattr(self, "large_preview_label") or not self.candidates or index >= len(self.candidates):
+            return
+        image = Image.fromarray(self.candidates[index].image[:, :, ::-1]).resize(
+            (340, 191), Image.Resampling.LANCZOS)
+        self._large_preview_ref = ImageTk.PhotoImage(image)
+        self.large_preview_label.configure(image=self._large_preview_ref, text="")
 
     def _invalidate_candidates(self, *_):
         self.candidates = []
+        if hasattr(self, "large_preview_label"):
+            self._large_preview_ref = None
+            self.large_preview_label.configure(image="", text="A/B/C 카드 이미지를 클릭하면 표시됩니다")
         if hasattr(self, "preview_labels"):
             self.preview_refs.clear()
             for image_label, note_label in zip(self.preview_labels, self.note_labels):
@@ -232,9 +277,8 @@ class App(tk.Tk):
             values=preset_names(self.channel.get()), state="readonly", width=24)
         self.typography_combo.pack(side="left", padx=(0, 10))
         ttk.Label(type_row, text="제목 크기").pack(side="left")
-        self.title_size_combo = ttk.Combobox(type_row, textvariable=self.title_size,
-            values=["Auto", "Small", "Medium", "Large"], state="readonly", width=10)
-        self.title_size_combo.pack(side="left", padx=(4, 10))
+        self.title_size_combo = ttk.Combobox(type_row, values=["슬라이더 조정"], state="disabled", width=12)
+        self.title_size_combo.pack_forget()
         self.two_line_check = ttk.Checkbutton(type_row, text="자동 2줄 분할", variable=self.auto_two_line)
         self.two_line_check.pack(side="left", padx=4)
         self.keyword_check = ttk.Checkbutton(type_row, text="핵심어 강조", variable=self.emphasize_keyword)
@@ -242,8 +286,29 @@ class App(tk.Tk):
         ttk.Label(type_row, text="핵심어").pack(side="left", padx=(6, 2))
         self.keyword_entry = ttk.Entry(type_row, textvariable=self.keyword, width=18)
         self.keyword_entry.pack(side="left")
-        self.typography_controls = [self.typography_combo, self.title_size_combo, self.two_line_check,
-                                    self.keyword_check, self.keyword_entry]
+        self.typography_controls = [self.typography_combo, self.two_line_check, self.keyword_check, self.keyword_entry]
+        control_row = ttk.Frame(tab); control_row.pack(fill="x", padx=16, pady=(0, 2))
+        ttk.Label(control_row, text="Title size").pack(side="left")
+        self.title_size_scale = ttk.Scale(control_row, from_=64, to=150, variable=self.title_size,
+            orient="horizontal", length=150); self.title_size_scale.pack(side="left", padx=5)
+        ttk.Label(control_row, textvariable=self.title_size).pack(side="left", padx=(0, 12))
+        ttk.Label(control_row, text="Outline").pack(side="left")
+        self.outline_scale = ttk.Scale(control_row, from_=0, to=22, variable=self.outline_thickness,
+            orient="horizontal", length=135); self.outline_scale.pack(side="left", padx=5)
+        ttk.Label(control_row, text="Glow").pack(side="left")
+        self.glow_scale = ttk.Scale(control_row, from_=0, to=1.5, variable=self.glow_intensity,
+            orient="horizontal", length=110); self.glow_scale.pack(side="left", padx=5)
+        ttk.Label(control_row, text="Shadow").pack(side="left")
+        self.shadow_scale = ttk.Scale(control_row, from_=0, to=1.5, variable=self.shadow_intensity,
+            orient="horizontal", length=110); self.shadow_scale.pack(side="left", padx=5)
+        ttk.Label(control_row, text="줄바꿈 수동 수정(|)").pack(side="left", padx=(10, 2))
+        self.manual_breaks_entry = ttk.Entry(control_row, textvariable=self.manual_breaks, width=27)
+        self.manual_breaks_entry.pack(side="left")
+        self.safe_zone_toggle = ttk.Checkbutton(control_row, text="안전영역 표시", variable=self.safe_zone_overlay)
+        self.safe_zone_toggle.pack(side="left", padx=8)
+        self.typography_controls += [self.title_size_scale, self.outline_scale, self.glow_scale,
+            self.shadow_scale, self.manual_breaks_entry, self.safe_zone_toggle]
+        ttk.Label(tab, textvariable=self.line_break_preview, foreground="#335577").pack(anchor="w", padx=22)
         text_row = ttk.Frame(tab); text_row.pack(fill="x", padx=16, pady=(2, 4))
         for label, variable, width in (("EP", self.template_episode, 10), ("메인 제목", self.template_title, 32), ("영문/부제", self.template_subtitle, 34)):
             ttk.Label(text_row, text=label).pack(side="left", padx=(0, 4))
@@ -270,8 +335,14 @@ class App(tk.Tk):
             image_label = ttk.Label(card, text="미리보기 대기", anchor="center"); image_label.pack(fill="both", expand=True, padx=5, pady=5)
             note = ttk.Label(card, text="", wraplength=330, justify="center"); note.pack(padx=5, pady=3)
             ttk.Button(card, text="이 후보만 저장", command=lambda i=index: self.save_one(i)).pack(pady=(2, 8))
+            image_label.bind("<Button-1>", lambda event, i=index: self.show_selected_preview(i))
             self.preview_labels.append(image_label); self.note_labels.append(note); cards.columnconfigure(index, weight=1)
         cards.rowconfigure(0, weight=1)
+        detail = ttk.LabelFrame(tab, text="340px 미리보기")
+        detail.pack(fill="x", padx=18, pady=3)
+        self.large_preview_label = ttk.Label(detail, text="A/B/C 카드 이미지를 클릭하면 표시됩니다", anchor="center")
+        self.large_preview_label.pack(pady=3)
+        self.selected_preview_var.trace_add("write", lambda *_: self.show_selected_preview(["A", "B", "C"].index(self.selected_preview_var.get())))
         self.save_all_button = ttk.Button(tab, text="3개 모두 저장", command=self.save_all, state="disabled")
         self.save_all_button.pack(pady=8, ipadx=30, ipady=5)
 
@@ -300,9 +371,14 @@ class App(tk.Tk):
             self.candidates = create_candidate_images(self.src.get(), self.channel.get(), self.source_mode.get(), self.focus_mode.get(), self.protagonist, self.counterpart,
                                                       self.story_type.get(), self.template_episode.get(), self.template_title.get(), self.template_subtitle.get(),
                                                       self.typography_style.get(), self.auto_two_line.get(), self.emphasize_keyword.get(),
-                                                      self.keyword.get(), self.title_size.get()); self.preview_refs.clear()
+                                                      self.keyword.get(), self.title_size.get(),
+                                                      manual_breaks=self.manual_breaks.get().replace("|", "\n"),
+                                                      outline_thickness=self.outline_thickness.get(),
+                                                      glow_intensity=self.glow_intensity.get(),
+                                                      shadow_intensity=self.shadow_intensity.get(),
+                                                      show_safe_overlay=self.safe_zone_overlay.get()); self.preview_refs.clear()
             for candidate, image_label, note_label in zip(self.candidates, self.preview_labels, self.note_labels):
-                photo = ImageTk.PhotoImage(Image.fromarray(candidate.image[:, :, ::-1]).resize((340, 191), Image.Resampling.LANCZOS))
+                photo = ImageTk.PhotoImage(Image.fromarray(candidate.image[:, :, ::-1]).resize((280, 158), Image.Resampling.LANCZOS))
                 self.preview_refs.append(photo); image_label.configure(image=photo, text="")
                 type_note = candidate.typography or {}
                 title_meta = type_note.get("title", {})
@@ -310,6 +386,7 @@ class App(tk.Tk):
                 style_name = TYPOGRAPHY_PRESETS[style_key].name if style_key in TYPOGRAPHY_PRESETS else ""
                 detail = f"{style_name} · {title_meta.get('font_size', '')} px · {title_meta.get('contrast', '')} · {title_meta.get('keyword', '')}"
                 note_label.configure(text=candidate.composition + "\n" + detail)
+            self.show_selected_preview(["A", "B", "C"].index(self.selected_preview_var.get()))
             scores = candidate_similarities(self.candidates)
             score_text = " · ".join(f"{pair} 차이 {100 * (1 - score):.1f}%" for pair, score in scores.items())
             if candidates_too_similar(self.candidates):

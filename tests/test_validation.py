@@ -43,7 +43,7 @@ class CandidateValidation(unittest.TestCase):
             differences = [float(np.mean(cv2.absdiff(decoded[i], decoded[j]))) for i, j in ((0, 1), (0, 2), (1, 2))]
             self.assertTrue(all(value > 2.0 for value in differences), differences)
             manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-            self.assertEqual("0.3.3", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
+            self.assertEqual("0.4.0", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
 
     def test_ascii_paths(self):
         self.run_case("ascii input", "ascii output")
@@ -143,6 +143,18 @@ class CandidateValidation(unittest.TestCase):
                 second = create_candidate_images(source, "Tokyo Chill", protagonist=point)[0].image
             np.testing.assert_array_equal(first, second)
 
+    def test_template_manual_point_ignores_distant_false_face(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw:
+            source = Path(raw) / "manual-template.png"
+            image = np.full((720, 1280, 3), 110, dtype=np.uint8)
+            write_unicode(source, image)
+            with patch("thumbnail_engine._detect_faces", return_value=[(90, 160, 110, 130)]):
+                candidates = create_candidate_images(source, "Tokyo Chill", TEMPLATE_MODE,
+                    protagonist=(0.76, 0.58), title="manual focus")
+            x0, _, x1, _ = candidates[0].crop_box
+            self.assertLess(x1 - x0, image.shape[1])
+            self.assertGreater((x0 + x1) / 2 / image.shape[1], 0.60)
+
     def test_gui_manual_point_selection_and_source_reset(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw:
             first = Path(raw) / "first.png"; second = Path(raw) / "second.png"
@@ -155,15 +167,15 @@ class CandidateValidation(unittest.TestCase):
                 self.skipTest(f"Tk desktop is unavailable: {exc}")
             try:
                 self.assertEqual(TEMPLATE_MODE, app.source_mode.get())
-                self.assertEqual("CINEMATIC CHILL", app.typography_style.get())
+                self.assertEqual("Japanese Impact", app.typography_style.get())
                 self.assertEqual(6, len(app.typography_combo["values"]))
                 self.assertTrue(app.auto_two_line.get()); self.assertTrue(app.emphasize_keyword.get())
-                self.assertEqual("Auto", app.title_size.get())
+                self.assertEqual(108, int(app.title_size.get()))
                 app.channel.set("OLD POP LOUNGE"); app.update()
                 self.assertEqual(6, len(app.typography_combo["values"]))
-                self.assertEqual("SENIOR CLASSIC", app.typography_style.get())
+                self.assertEqual("Senior Classic", app.typography_style.get())
                 app.channel.set("Tokyo Chill"); app.update()
-                self.assertEqual("CINEMATIC CHILL", app.typography_style.get())
+                self.assertEqual("Japanese Impact", app.typography_style.get())
                 self.assertTrue(app.save_all_button.instate(["disabled"]))
                 app.src.set(str(first)); app.update()
                 self.assertIn("권장 모드", app.mode_guard.get())

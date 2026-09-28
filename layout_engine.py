@@ -1,79 +1,69 @@
-"""Composition-specific text geometry; visual glyph treatments live in typography_engine."""
+"""Composition-specific geometry routed through Skia/HarfBuzz typography."""
 from __future__ import annotations
 
-from PIL import Image, ImageDraw
 import cv2
 import numpy as np
 
-from typography_engine import (TYPOGRAPHY_PRESETS, contrast_mode, draw_support_text,
-                               draw_thumbnail_title, preset_key)
+from typography.svg_badge_renderer import render_svg_png, badge_svg
+from typography.text_renderer_skia import render_title
+from typography.text_style import get_preset
+from typography.thumbnail_layouts import choose_layout
 
 
-LAYOUTS = {
-    "A_PERSON": {"tokyo": (48, 392, 850, 250, "left"), "old": (48, 378, 1120, 270, "left"), "variant": "person"},
-    "B_EMOTION": {"tokyo": (230, 404, 1000, 236, "center"), "old": (130, 390, 1080, 260, "center"), "variant": "emotion"},
-    "B_MEMORY": {"tokyo": (230, 404, 1000, 236, "center"), "old": (130, 390, 1080, 260, "center"), "variant": "emotion"},
-    "C_STORY": {"tokyo": (52, 96, 760, 258, "left"), "old": (58, 92, 910, 280, "left"), "variant": "story"},
-    "C_SCENERY": {"tokyo": (52, 96, 760, 258, "left"), "old": (58, 92, 910, 280, "left"), "variant": "story"},
-}
-
-
-def _contrast_color(rgb: np.ndarray, box: tuple[int, int, int, int], light: str, dark: str) -> str:
-    return dark if contrast_mode(rgb, box) == "dark" else light
+def _composite_badge(image_bgr: np.ndarray, rgba: np.ndarray, x: int, y: int) -> None:
+    height, width = rgba.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(image_bgr.shape[1], x + width), min(image_bgr.shape[0], y + height)
+    if x1 <= x0 or y1 <= y0:
+        return
+    overlay = rgba[y0 - y:y1 - y, x0 - x:x1 - x]
+    alpha = overlay[:, :, 3:4].astype(np.float32) / 255.0
+    rgb = overlay[:, :, :3][:, :, ::-1]
+    image_bgr[y0:y1, x0:x1] = (rgb * alpha + image_bgr[y0:y1, x0:x1] * (1 - alpha)).astype(np.uint8)
 
 
 def render_candidate_text(image_bgr: np.ndarray, channel: str, code: str, story_type: str,
                           episode: str, title: str, subtitle: str, style: str,
                           auto_two_line: bool = True, emphasize_keyword: bool = True,
-                          keyword: str = "", size_option: str = "Auto") -> tuple[np.ndarray, dict]:
-    """Apply metadata and title styles to an image using a candidate-specific layout."""
-    style_id = preset_key(style, channel)
-    preset = TYPOGRAPHY_PRESETS[style_id]
-    old = channel == "OLD POP LOUNGE"
-    layout = LAYOUTS.get(code, LAYOUTS["A_PERSON"])
-    key = "old" if old else "tokyo"
-    title_box = layout[key]
-    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    canvas = Image.fromarray(rgb).convert("RGBA")
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    base_array = np.asarray(canvas.convert("RGB"))
-
-    # The story-card treatment is deliberately the only preset with a solid card.
-    # Other looks rely on chromatic accents, glyph outline, shadow and controlled glow.
-    x, y, width, height, align = title_box
-    if preset.card_fill:
-        draw.rounded_rectangle((x - 22, y - 18, x + width + 18, y + height + 14),
-                               radius=24 if not old else 18, fill=preset.card_fill)
-
-    meta_light = "#FFFFFF" if not old else "#FFF3D3"
-    meta_dark = "#171B23" if not old else "#382214"
-    # Channel / story / episode stay in a slim upper band and never compete with title scale.
-    brand_box = (38, 18, 340, 44)
-    story_box = (742, 18, 1025, 44)
-    episode_box = (1048, 18, 228, 46)
-    brand_color = _contrast_color(base_array, brand_box, meta_light, meta_dark)
-    story_color = _contrast_color(base_array, story_box, preset.accent, preset.dark_accent)
-    episode_color = _contrast_color(base_array, episode_box, meta_light, meta_dark)
-    meta_size = 29 if old else 25
-    draw_support_text(draw, (42, 20), "OLD POP LOUNGE" if old else "TOKYO CHILL", meta_size,
-                      brand_color, outline="#11151D", outline_width=2)
-    label = {"남자 이야기": "MAN'S STORY", "여자 이야기": "WOMAN'S STORY",
-             "두 사람 이야기": "TWO STORIES", "자동": "STORY"}.get(story_type, story_type or "STORY")
-    draw_support_text(draw, (750, 20), label, meta_size - 2, story_color,
-                      outline="#11151D", outline_width=2)
-    draw_support_text(draw, (1055, 20), (episode or "EP.001").upper(), meta_size - 1,
-                      episode_color, outline="#11151D", outline_width=2)
-
-    title_meta = draw_thumbnail_title(canvas, title, (x, y, width, height), style_id,
-                                      auto_two_line, emphasize_keyword, keyword,
-                                      size_option=size_option, align=align,
-                                      variant=layout["variant"])
-    # Keep the supporting copy in a visually subordinate bottom rail.
-    subtitle_box = (38, 672, 1100, 34)
-    subtitle_color = _contrast_color(base_array, subtitle_box, preset.accent, preset.dark_accent)
-    sub_size = 31 if old else 26
-    draw_support_text(draw, (44, 674), (subtitle or "").strip(), sub_size,
-                      subtitle_color, outline="#10131A", outline_width=2)
-    result = cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR)
-    return result, {"typography_style": style_id, "title": title_meta, "title_box": list(title_box),
-                    "variant": layout["variant"]}
+                          keyword: str = "", size_option: str = "Auto", *,
+                          outline_thickness: float | None = None, glow_intensity: float = 1.0,
+                          shadow_intensity: float = 0.9, manual_breaks: str = "",
+                          subject_boxes=(), safe_zones=(), show_safe_overlay: bool = False) -> tuple[np.ndarray, dict]:
+    """Render candidate metadata, vector labels, and styled title on a 1280x720 frame."""
+    preset = get_preset(style, channel)
+    max_lines = 3 if auto_two_line else 1
+    layout = choose_layout(code, channel, story_type, episode, size_option,
+                           subject_boxes=subject_boxes, safe_zones=safe_zones)
+    title_text = (title or ("思い出の夜" if channel == "Tokyo Chill" else "懐かしい記憶")).strip()
+    result = render_title(image_bgr, title_text, layout.title_box, preset.name, channel,
+        layout.align, size_option, outline_thickness, glow_intensity, shadow_intensity,
+        keyword if emphasize_keyword else "", max_lines, manual_breaks, safe_zones,
+        subject_boxes, 2, show_safe_overlay)
+    output = result.image.copy()
+    if subtitle.strip():
+        subtitle_y = 668 if channel == "Tokyo Chill" else 660
+        caption = render_title(output, subtitle.strip(), (48, subtitle_y, 1160, 46),
+            preset.name, channel, "left", 31 if channel == "Tokyo Chill" else 34,
+            outline_thickness=1.2, glow_intensity=0.25, shadow_intensity=0.35,
+            max_lines=1, supersample=2)
+        output = caption.image
+    # The top channel tag stays subdued; the candidate badge differs by A/B/C.
+    channel_badge = render_svg_png(badge_svg(channel.upper(), "mini", 270, 68,
+        fill=preset.outline, accent=preset.accent, color="#FFFFFF"), supersample=2,
+        text=channel.upper())
+    _composite_badge(output, channel_badge, 30, 20)
+    label = f"{code[0]} · {layout.badge_text}"
+    badge = render_svg_png(badge_svg(label, layout.badge_kind, layout.badge_box[2],
+        layout.badge_box[3], fill=preset.outline, accent=preset.accent,
+        color="#FFFFFF"), supersample=2, text=label)
+    _composite_badge(output, badge, layout.badge_box[0], layout.badge_box[1])
+    return output, {
+        "typography_style": preset.key,
+        "typography_name": preset.name,
+        "title": {"lines": result.lines, "keyword": result.keyword, "font_size": result.font_size,
+                  "contrast": result.contrast, "bbox": list(result.bbox),
+                  "line_score": result.chosen_break_score,
+                  "font_families": list(result.fallback_families)},
+        "title_box": list(layout.title_box), "variant": code,
+        "badge": layout.badge_text,
+    }

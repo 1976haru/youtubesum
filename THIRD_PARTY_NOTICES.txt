@@ -11,3 +11,11 @@ FFmpeg configuration can be inspected with: ffmpeg -version
 An ABI-compatible replacement bundle can be placed in a directory named ydts_ffmpeg beside the application executable; it takes priority over the embedded copy.
 
 The BtbN archive SHA-256 is pinned by scripts/prepare_ffmpeg.ps1. No binary is downloaded at application runtime.
+
+The Professional Typography Engine uses the following third-party Python packages:
+- skia-python 144.0.post2: BSD-style Skia bindings; license file is bundled under third_party/python/skia-python.
+- uharfbuzz 0.56.2: Apache License 2.0; license file is bundled under third_party/python/uharfbuzz.
+- fontTools 4.56.0: MIT License; license file is bundled under third_party/python/fonttools.
+- uniseg 0.10.1: MIT License; license file is bundled under third_party/python/uniseg.
+
+These packages use their installed distribution licenses; no font files are redistributed. Fonts are read from the target system.

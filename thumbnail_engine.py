@@ -10,8 +10,9 @@ import cv2
 import numpy as np
 from layout_engine import render_candidate_text
 from typography_engine import _installed_font
+from typography.storage_assets import load_image_storage_assets
 
-APP_VERSION = "0.3.3"
+APP_VERSION = "0.4.0"
 OUTPUT_SIZE = (1280, 720)
 COMPLETED_MODE = "완성 썸네일(글자 보호)"
 RAW_MODE = "텍스트 없는 원본 이미지"
@@ -257,9 +258,26 @@ def _emphasize_subject(base, centers, strength=0.26, warm=False, radius_x=0.22, 
 def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode="자동", protagonist=None, counterpart=None,
                            story_type="자동", episode="EP.001", title="", subtitle="",
                            typography_style=None, auto_two_line=True, emphasize_keyword=True,
-                           keyword="", title_size="Auto"):
-    image = _read(src)
+                           keyword="", title_size=100, manual_breaks="", outline_thickness=None,
+                           glow_intensity=1.0, shadow_intensity=0.9, show_safe_overlay=False):
+    storage = load_image_storage_assets(src)
+    image = _read(storage.source_image)
     faces = _detect_faces(image)
+    def stored_box(record):
+        if not isinstance(record, dict):
+            record = {"bbox": record}
+        box = record.get("bbox", record.get("box", record.get("rect")))
+        if not isinstance(box, (tuple, list)) or len(box) != 4:
+            return None
+        x, y, w, h = map(float, box)
+        ih, iw = image.shape[:2]
+        if max(abs(x), abs(y), abs(w), abs(h)) <= 1:
+            x, w, y, h = x * iw, w * iw, y * ih, h * ih
+        return tuple(map(int, (x, y, w, h)))
+    stored_subjects = [box for record in storage.subject_boxes if (box := stored_box(record))]
+    if not faces and stored_subjects:
+        faces = stored_subjects
+    safe_zones = storage.safe_zones
     specs = STRATEGIES.get(channel)
     if specs is None:
         raise ValueError(f"지원하지 않는 채널입니다: {channel}")
@@ -340,7 +358,9 @@ def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode
                 return None
             px, py = int(point[0] * iw), int(point[1] * ih)
             nearest = min(detected, key=lambda b: (px - (b[0] + b[2] / 2)) ** 2 + (py - (b[1] + b[3] / 2)) ** 2, default=None)
-            if nearest is not None:
+            max_face_distance = max(iw * 0.12, ih * 0.20)
+            if nearest is not None and ((px - (nearest[0] + nearest[2] / 2)) ** 2 +
+                                        (py - (nearest[1] + nearest[3] / 2)) ** 2) ** 0.5 <= max_face_distance:
                 return nearest
             bw, bh = max(56, int(iw * 0.12)), max(72, int(ih * 0.24))
             return max(0, px - bw // 2), max(0, py - bh // 2), min(bw, iw), min(bh, ih)
@@ -375,7 +395,14 @@ def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode
             if channel == "OLD POP LOUNGE":
                 framed = _grade(framed, "story" if code.startswith("C_") else "emotion")
             rendered, typography = render_candidate_text(framed, channel, code, story_type, episode,
-                title, subtitle, typography_style, auto_two_line, emphasize_keyword, keyword, title_size)
+                title, subtitle, typography_style, auto_two_line, emphasize_keyword, keyword, title_size,
+                outline_thickness=outline_thickness, glow_intensity=glow_intensity,
+                shadow_intensity=shadow_intensity, manual_breaks=manual_breaks,
+                subject_boxes=stored_subjects, safe_zones=safe_zones,
+                show_safe_overlay=show_safe_overlay)
+            typography["image_storage"] = {"source": storage.source_kind,
+                "cleaned_canvas": str(storage.cleaned_canvas) if storage.cleaned_canvas else None,
+                "reference_thumbnail": str(storage.reference_thumbnail) if storage.reference_thumbnail else None}
             generated.append(Candidate(code, label, rendered, note, crop_box=crop, typography=typography))
         return generated
     return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
@@ -409,10 +436,14 @@ def save_candidates(src, out_dir, candidates, selected_code=None):
 
 def generate_candidates(src, out_dir, channel, source_mode=COMPLETED_MODE, focus_mode="자동", protagonist=None, counterpart=None,
                         story_type="자동", episode="EP.001", title="", subtitle="", typography_style=None,
-                        auto_two_line=True, emphasize_keyword=True, keyword="", title_size="Auto"):
+                        auto_two_line=True, emphasize_keyword=True, keyword="", title_size="Auto",
+                        manual_breaks="", outline_thickness=None, glow_intensity=1.0,
+                        shadow_intensity=0.9, show_safe_overlay=False):
     candidates = create_candidate_images(src, channel, source_mode, focus_mode, protagonist, counterpart,
                                          story_type, episode, title, subtitle, typography_style,
-                                         auto_two_line, emphasize_keyword, keyword, title_size)
+                                         auto_two_line, emphasize_keyword, keyword, title_size,
+                                         manual_breaks, outline_thickness, glow_intensity,
+                                         shadow_intensity, show_safe_overlay)
     return save_candidates(src, out_dir, candidates)
 
 

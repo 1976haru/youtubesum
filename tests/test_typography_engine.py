@@ -9,8 +9,8 @@ from typography_engine import (PRESETS_BY_CHANNEL, TYPOGRAPHY_PRESETS, choose_ke
 
 class TypographyEngineTests(unittest.TestCase):
     def test_twelve_named_presets_are_grouped_six_per_channel(self):
-        tokyo = ("CINEMATIC CHILL", "JAPANESE IMPACT", "ROMANTIC NEON", "EMOTIONAL MONO", "STORY CARD", "NIGHT DRIVE")
-        old = ("SENIOR CLASSIC", "SENIOR EMOTIONAL", "FIRST SNOW", "AUTUMN MEMORY", "CAFE WARM", "CHRISTMAS GLOW")
+        tokyo = ("Japanese Impact", "Romantic Neon", "Urban Story", "Soft Memory", "Night Drive", "Heartbeat Clean")
+        old = ("Senior Classic", "Warm Gold", "First Snow", "Autumn Lounge", "Christmas Glow", "Calm Blue Memory")
         self.assertEqual(tokyo, preset_names("Tokyo Chill"))
         self.assertEqual(old, preset_names("OLD POP LOUNGE"))
         self.assertEqual(12, len(TYPOGRAPHY_PRESETS))
