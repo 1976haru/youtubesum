@@ -1,0 +1,4 @@
+PyInstaller==6.14.2
+Pillow==11.1.0
+numpy==1.24.4
+opencv-python-headless==4.11.0.86

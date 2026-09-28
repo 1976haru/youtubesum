@@ -2,13 +2,14 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from motion_engine import render
-from thumbnail_engine import generate_candidates
+from thumbnail_engine import create_candidate_images, generate_candidates
 
 
 def write_unicode(path, image):
@@ -54,6 +55,22 @@ class CandidateValidation(unittest.TestCase):
             write_unicode(source, image)
             render(source, output, "Tokyo Chill - Rain", duration=0.2, fps=2, width=320, height=180)
             self.assertTrue(output.exists()); self.assertGreater(output.stat().st_size, 0)
+
+    def test_one_and_multiple_faces_are_supported(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw:
+            source = Path(raw) / "people.png"
+            y, x = np.indices((900, 1400))
+            image = np.dstack((x % 256, y % 256, (x + y) % 256)).astype(np.uint8)
+            write_unicode(source, image)
+            for boxes in ([(500, 260, 150, 190)], [(400, 270, 130, 170), (720, 250, 150, 190)]):
+                with patch("thumbnail_engine._detect_faces", return_value=boxes):
+                    candidates = create_candidate_images(source, "Tokyo Chill")
+                self.assertEqual(3, len(candidates))
+                self.assertTrue(all(candidate.image.shape[:2] == (720, 1280) for candidate in candidates))
+                self.assertIn(f"얼굴 {len(boxes)}명 보호", candidates[0].composition)
+            with patch("thumbnail_engine._detect_faces", return_value=[(30, 240, 150, 190), (1210, 250, 150, 190)]):
+                wide_group = create_candidate_images(source, "Tokyo Chill")
+            self.assertIn("전체 원본 안전 구도", wide_group[0].composition)
 
 
 if __name__ == "__main__":
