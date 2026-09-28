@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import csv
-from functools import lru_cache
 import json
-import os
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from layout_engine import render_candidate_text
+from typography_engine import _installed_font
 
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 OUTPUT_SIZE = (1280, 720)
 COMPLETED_MODE = "완성 썸네일(글자 보호)"
 RAW_MODE = "텍스트 없는 원본 이미지"
@@ -33,6 +31,7 @@ class Candidate:
     composition: str
     file: str | None = None
     crop_box: tuple[int, int, int, int] | None = None
+    typography: dict | None = None
 
 
 def _read(path):
@@ -113,102 +112,15 @@ def _template_crop(image, focus_boxes, padding=0.8, fallback_center=(0.5, 0.46),
     return left, top, right, bottom
 
 
-@lru_cache(maxsize=128)
 def _font(size, script="default"):
-    """Use redistributable OS fonts; no proprietary font files are bundled."""
-    candidates = []
-    if sys.platform == "win32":
-        fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-        names = {"hangul": ("malgun.ttf", "malgunsl.ttf", "NanumGothic.ttf", "YuGothB.ttc", "arial.ttf"),
-                 "japanese": ("YuGothB.ttc", "meiryo.ttc", "msgothic.ttc", "malgun.ttf", "arial.ttf"),
-                 "default": ("YuGothB.ttc", "meiryo.ttc", "malgun.ttf", "arial.ttf")}[script]
-        candidates += [fonts / name for name in names]
-    candidates += [Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-                   Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc")]
-    for path in candidates:
-        if path.is_file():
-            try:
-                return ImageFont.truetype(str(path), size=size, index=0)
-            except (OSError, TypeError):
-                continue
-    return ImageFont.load_default()
-
-
-def _script_of(char):
-    code = ord(char)
-    if 0x1100 <= code <= 0x11FF or 0x3130 <= code <= 0x318F or 0xAC00 <= code <= 0xD7AF:
-        return "hangul"
-    if 0x3040 <= code <= 0x30FF or 0x3400 <= code <= 0x9FFF or 0xF900 <= code <= 0xFAFF:
-        return "japanese"
-    return "default"
-
-
-def _unicode_runs(text, size):
-    runs = []
-    for char in text:
-        script = _script_of(char)
-        font = _font(size, script)
-        # Merge only adjacent characters using the same OS font file/script.
-        if runs and runs[-1][0] == script:
-            runs[-1] = (script, runs[-1][1] + char, font)
-        else:
-            runs.append((script, char, font))
-    return runs
-
-
-def _unicode_width(text, size):
-    return sum(float(font.getlength(run)) for _, run, font in _unicode_runs(text, size))
-
-
-def _draw_unicode(draw, xy, text, size, fill, stroke_width=0, stroke_fill=None):
-    x, y = xy
-    for _, run, font in _unicode_runs(text, size):
-        draw.text((x, y), run, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
-        x += float(font.getlength(run))
-
-
-def _fit_unicode_size(text, max_width, initial_size, minimum_size=22):
-    size = initial_size
-    while size > minimum_size and _unicode_width(text, size) > max_width:
-        size -= 2
-    return size
+    """Compatibility wrapper around the OS-only typography font resolver."""
+    script = {"hangul": "ko", "japanese": "ja"}.get(script, "en")
+    return _installed_font(size, script, bold=True)
 
 
 def _render_template(image, channel, code, story_type, episode, title, subtitle):
-    """Render editable Unicode template text independently over raw imagery."""
-    canvas = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).convert("RGBA")
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    old_pop = channel == "OLD POP LOUNGE"
-    ink = (255, 246, 225, 255) if old_pop else (255, 255, 255, 255)
-    accent = (236, 207, 153, 255) if old_pop else (255, 221, 80, 255)
-    # Solid translucent safe-zone plates keep all copy readable at 340 px.
-    if code == "A_PERSON":
-        panel = (40, 480, 900, 692); title_xy, episode_xy, sub_xy = (66, 545), (1050, 58), (68, 656)
-        label_xy = (790, 62)
-    elif code in ("B_EMOTION", "B_MEMORY"):
-        panel = (330, 438, 1238, 690); title_xy, episode_xy, sub_xy = (370, 505), (1050, 58), (372, 641)
-        label_xy = (810, 62)
-    else:
-        panel = (38, 52, 702, 292); title_xy, episode_xy, sub_xy = (66, 126), (1050, 58), (68, 244)
-        label_xy = (68, 62)
-    draw.rounded_rectangle(panel, radius=18 if old_pop else 28, fill=(10, 12, 18, 174 if not old_pop else 188))
-    story_labels = {"남자 이야기": "MAN'S STORY", "여자 이야기": "WOMAN'S STORY",
-                    "두 사람 이야기": "TWO STORIES", "자동": "STORY"}
-    story = story_labels.get(story_type, story_type or "STORY")
-    brand = "OLD POP LOUNGE" if old_pop else "TOKYO CHILL"
-    fs = 24 if old_pop else 22
-    draw.text((40, 20), brand, font=_font(fs), fill=ink, stroke_width=1, stroke_fill=(0, 0, 0, 220))
-    draw.text(label_xy, story, font=_font(fs), fill=accent, stroke_width=1, stroke_fill=(0, 0, 0, 220))
-    draw.text(episode_xy, episode or "EP.001", font=_font(26 if old_pop else 23), fill=ink,
-              stroke_width=1, stroke_fill=(0, 0, 0, 220))
-    title = title.strip() or ("思い出の夜" if not old_pop else "懐かしのメロディー")
-    title_size = _fit_unicode_size(title, 790 if code != "C_STORY" and code != "C_SCENERY" else 570,
-                                   64 if not old_pop else 58, 36)
-    _draw_unicode(draw, title_xy, title, title_size, ink, stroke_width=2, stroke_fill=(0, 0, 0, 230))
-    subtitle = subtitle.strip() or ("A quiet story in the city" if not old_pop else "Songs that stay with us")
-    sub_size = _fit_unicode_size(subtitle, 800, 27 if not old_pop else 30, 22)
-    _draw_unicode(draw, sub_xy, subtitle, sub_size, accent, stroke_width=1, stroke_fill=(0, 0, 0, 230))
-    return cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR)
+    """Backward-compatible entry point; layout and glyph policy are separate engines."""
+    return render_candidate_text(image, channel, code, story_type, episode, title, subtitle)[0]
 
 
 def candidate_similarities(candidates):
@@ -343,7 +255,9 @@ def _emphasize_subject(base, centers, strength=0.26, warm=False, radius_x=0.22, 
 
 
 def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode="자동", protagonist=None, counterpart=None,
-                           story_type="자동", episode="EP.001", title="", subtitle=""):
+                           story_type="자동", episode="EP.001", title="", subtitle="",
+                           typography_style=None, auto_two_line=True, emphasize_keyword=True,
+                           keyword="", title_size="Auto"):
     image = _read(src)
     faces = _detect_faces(image)
     specs = STRATEGIES.get(channel)
@@ -460,8 +374,9 @@ def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode
             framed = _fit_on_canvas(image, "matte") if code.startswith("C_") or (crop == (0, 0, iw, ih) and abs(iw / ih - 16 / 9) > 0.01) else _crop_resize(image, crop)
             if channel == "OLD POP LOUNGE":
                 framed = _grade(framed, "story" if code.startswith("C_") else "emotion")
-            rendered = _render_template(framed, channel, code, story_type, episode, title, subtitle)
-            generated.append(Candidate(code, label, rendered, note, crop_box=crop))
+            rendered, typography = render_candidate_text(framed, channel, code, story_type, episode,
+                title, subtitle, typography_style, auto_two_line, emphasize_keyword, keyword, title_size)
+            generated.append(Candidate(code, label, rendered, note, crop_box=crop, typography=typography))
         return generated
     return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
 
@@ -484,7 +399,8 @@ def save_candidates(src, out_dir, candidates, selected_code=None):
         "version": APP_VERSION, "source": str(src), "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "candidate_similarity": similarity, "diversity_warning": candidates_too_similar(candidates),
         "candidates": [{"code": c.code, "strategy": c.label, "composition": c.composition,
-                        "crop_box": list(c.crop_box) if c.crop_box else None, "file": c.file} for c in candidates if c.file],
+                        "crop_box": list(c.crop_box) if c.crop_box else None,
+                        "typography": c.typography, "file": c.file} for c in candidates if c.file],
         "note": "비생성형 로컬 분석만 사용하며 원본 파일은 수정하지 않는다.",
     }
     (out / f"{src.stem}_dynamic_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -492,9 +408,11 @@ def save_candidates(src, out_dir, candidates, selected_code=None):
 
 
 def generate_candidates(src, out_dir, channel, source_mode=COMPLETED_MODE, focus_mode="자동", protagonist=None, counterpart=None,
-                        story_type="자동", episode="EP.001", title="", subtitle=""):
+                        story_type="자동", episode="EP.001", title="", subtitle="", typography_style=None,
+                        auto_two_line=True, emphasize_keyword=True, keyword="", title_size="Auto"):
     candidates = create_candidate_images(src, channel, source_mode, focus_mode, protagonist, counterpart,
-                                         story_type, episode, title, subtitle)
+                                         story_type, episode, title, subtitle, typography_style,
+                                         auto_two_line, emphasize_keyword, keyword, title_size)
     return save_candidates(src, out_dir, candidates)
 
 
