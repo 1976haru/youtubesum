@@ -248,6 +248,59 @@ class CandidateValidation(unittest.TestCase):
         finally:
             app.destroy()
 
+    def test_image_project_load_and_refresh_preserve_user_edits(self):
+        from PIL import Image
+        from unittest.mock import Mock
+        from app import App
+
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            Image.new("RGB", (640, 360), (40, 80, 110)).save(folder / "canvas_clean.png")
+            Image.new("RGB", (640, 360), (20, 30, 40)).save(folder / "preview_reference.png")
+            (folder / "project_manifest.json").write_text(json.dumps({
+                "channel": "OLD POP LOUNGE", "title": "첫눈에 다시 만난 날", "subtitle": "A winter song",
+                "episode": 12, "story_type": "FIRST SNOW", "preferred_typography": "First Snow"}), encoding="utf-8")
+            (folder / "palette.json").write_text(json.dumps({"fill_color": "#F0E0D0", "stroke_color": "#201810"}), encoding="utf-8")
+            (folder / "subject_boxes.json").write_text(json.dumps({"subjects": [
+                {"role": "protagonist", "bbox": [0.2, 0.2, 0.2, 0.4]},
+                {"role": "counterpart", "bbox": [0.65, 0.2, 0.15, 0.4]}]}), encoding="utf-8")
+            (folder / "safe_zones.json").write_text('{"zones": [[0.1, 0.1, 0.2, 0.2]]}', encoding="utf-8")
+            (folder / "composition.json").write_text(json.dumps({"positions": {
+                "main_title": [0.1, 0.65, 0.6, 0.25], "subtitle": [0.2, 0.9, 0.5, 0.05]}}), encoding="utf-8")
+            app = App()
+            try:
+                rebuild = Mock()
+                app.build_composer_backgrounds = rebuild
+                self.assertTrue(app.load_image_project_folder(folder))
+                self.assertEqual("OLD POP LOUNGE", app.composer_channel.get())
+                self.assertEqual("첫눈에 다시 만난 날", app.composer_title.get())
+                self.assertEqual("EP.012", app.composer_episode.get())
+                self.assertEqual("First Snow", app.composer_style.get())
+                self.assertEqual("#F0E0D0", app.composer_fill.get())
+                self.assertIsNotNone(app.protagonist)
+                self.assertIsNotNone(app.counterpart)
+                self.assertIn("safe zones loaded", app.image_bridge_status.get())
+                app.composer_states["A_PERSON"]["positions"]["main_title"] = (77, 88, 500, 200)
+                app.composer_positions["A_PERSON"]["main_title"] = (77, 88, 500, 200)
+
+                app.composer_title.set("사용자가 수정한 제목")
+                app.composer_fill.set("#112233")
+                Image.new("RGB", (640, 360), (90, 50, 30)).save(folder / "canvas_clean.png")
+                (folder / "project_manifest.json").write_text('{"channel":"Tokyo Chill","title":"외부 변경"}', encoding="utf-8")
+                (folder / "palette.json").write_text('{"fill_color":"#ABCDEF"}', encoding="utf-8")
+                (folder / "safe_zones.json").write_text('{"zones": [[0.3, 0.1, 0.2, 0.2]]}', encoding="utf-8")
+                (folder / "composition.json").write_text(json.dumps({"positions": {
+                    "main_title": [0.15, 0.6, 0.5, 0.25], "subtitle": [0.3, 0.9, 0.5, 0.05]}}), encoding="utf-8")
+                self.assertTrue(app.refresh_image_project())
+                self.assertEqual("사용자가 수정한 제목", app.composer_title.get())
+                self.assertEqual("#112233", app.composer_fill.get())
+                self.assertEqual((384, 72, 256, 144), app.image_project.safe_zones[0]["bbox"])
+                self.assertEqual((77, 88, 500, 200), app.composer_positions["A_PERSON"]["main_title"])
+                self.assertEqual((384, 648, 640, 36), app.composer_positions["A_PERSON"]["subtitle"])
+                self.assertEqual(2, rebuild.call_count)
+            finally:
+                app.destroy()
+
     def test_one_and_multiple_faces_are_supported(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw:
             source = Path(raw) / "people.png"

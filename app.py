@@ -16,6 +16,7 @@ from motion_engine import PRESETS, render
 from typography_engine import TYPOGRAPHY_PRESETS, preset_names
 from typography.linebreak_engine import choose_line_break
 from typography.storage_assets import load_image_storage_assets
+from image_bridge import ImageProject, launch_edit, launch_generate, load_image_project
 from typography.text_style import get_preset, PRESETS_BY_CHANNEL
 from typography.text_renderer_skia import render_title
 from typography.thumbnail_layouts import choose_layout
@@ -111,6 +112,11 @@ class App(tk.Tk):
         self._composer_loading_state = False
         self._composer_drag = None
         self._composer_cards_loaded = False
+        self.image_project: ImageProject | None = None
+        self.image_project_path = tk.StringVar(value="No image project open")
+        self.image_bridge_status = tk.StringVar(value="clean canvas — · safe zones — · subject boxes — · palette — · manifest —")
+        self._image_bridge_palette = {}
+        self._image_bridge_position_baselines = {}
         ttk.Label(self, text="YOUTUBE DYNAMIC THUMBNAIL STUDIO", font=("Segoe UI", 18, "bold")).pack(pady=(14, 2))
         ttk.Label(self, text=f"v{APP_VERSION} · 3후보 미리보기 + Motion Intro · FFmpeg 포함", foreground="#555").pack()
         ttk.Label(self, text="Motion uses FFmpeg · LGPLv3 · 같은 폴더 ydts_ffmpeg로 호환 빌드 교체 가능", foreground="#555").pack()
@@ -394,12 +400,13 @@ class App(tk.Tk):
     def _tab_live_composer(self, notebook):
         tab = ttk.Frame(notebook); notebook.add(tab, text="Live Composer")
         toolbar = ttk.Frame(tab); toolbar.pack(fill="x", padx=10, pady=5)
-        ttk.Button(toolbar, text="프로젝트 폴더 열기", command=self.open_composer_project).pack(side="left")
+        ttk.Button(toolbar, text="프로젝트 폴더 열기", command=self.open_image_project).pack(side="left")
         ttk.Button(toolbar, text="A/B/C 배경 생성", command=self.build_composer_backgrounds).pack(side="left", padx=5)
-        ttk.Button(toolbar, text="배경 생성", command=lambda: self._composer_placeholder("배경 생성")).pack(side="left", padx=(18, 3))
-        ttk.Button(toolbar, text="배경 편집", command=lambda: self._composer_placeholder("배경 편집")).pack(side="left", padx=3)
-        ttk.Button(toolbar, text="image에서 새로고침", command=self.refresh_composer_project).pack(side="left", padx=3)
-        ttk.Label(toolbar, text="프로젝트 sidecar 자동 감지 · 없으면 기존 로컬 입력 사용", foreground="#555").pack(side="right")
+        ttk.Button(toolbar, text="배경 생성", command=self.launch_image_generate).pack(side="left", padx=(18, 3))
+        ttk.Button(toolbar, text="배경 편집", command=self.launch_image_edit).pack(side="left", padx=3)
+        ttk.Button(toolbar, text="image에서 새로고침", command=self.refresh_image_project).pack(side="left", padx=3)
+        ttk.Label(tab, textvariable=self.image_project_path, anchor="w", foreground="#34475b").pack(fill="x", padx=12)
+        ttk.Label(tab, textvariable=self.image_bridge_status, anchor="w", foreground="#555").pack(fill="x", padx=12, pady=(0, 3))
         text_fields = ttk.Frame(tab); text_fields.pack(fill="x", padx=10, pady=(0, 4))
         for label, variable, width in (("Main title", self.composer_title, 25), ("Subtitle", self.composer_subtitle, 26),
                                        ("EP", self.composer_episode, 9), ("Story label", self.composer_story, 16)):
@@ -860,6 +867,165 @@ class App(tk.Tk):
     def _composer_placeholder(self, feature):
         messagebox.showinfo(feature, f"{feature} 연결 인터페이스를 준비했습니다. 실제 배경 생성/편집 서비스 호출은 후속 버전에서 연결합니다.")
 
+    @staticmethod
+    def _bridge_channel(value, fallback="Tokyo Chill"):
+        value = str(value or "").strip().casefold().replace("_", " ").replace("-", " ")
+        if value in ("old pop lounge", "oldpoplounge", "old pop", "senior classic"):
+            return "OLD POP LOUNGE"
+        if value in ("tokyo chill", "tokyo chill rap", "tokyo"):
+            return "Tokyo Chill"
+        return fallback
+
+    @staticmethod
+    def _bridge_episode(value):
+        value = str(value or "").strip()
+        if not value:
+            return ""
+        return value if value.upper().startswith("EP") else f"EP.{value.zfill(3)}"
+
+    def open_image_project(self):
+        folder = filedialog.askdirectory(title="이미지 프로젝트 폴더 선택",
+            initialdir=str(self.image_project.folder) if self.image_project else None)
+        if folder:
+            self.load_image_project_folder(folder, refresh=False)
+
+    def load_image_project_folder(self, folder, refresh=False):
+        """Load project assets; refresh preserves the user's current text and control values."""
+        project = load_image_project(folder)
+        if project.source_image is None:
+            self.image_project = project
+            self.image_project_path.set(str(project.folder))
+            self.image_bridge_status.set(self._image_bridge_status_text(project.status))
+            messagebox.showwarning("Image Bridge", "프로젝트 폴더에서 캔버스나 이미지 파일을 찾지 못했습니다.")
+            return False
+
+        previous_project = self.image_project
+        old_palette = dict(self._image_bridge_palette)
+        self.image_project = project
+        self.image_project_path.set(str(project.folder))
+        self.image_bridge_status.set(self._image_bridge_status_text(project.status))
+        self.reference_src.set(str(project.reference_image) if project.reference_image else "")
+        if project.source_image and self.src.get() != str(project.source_image):
+            self.src.set(str(project.source_image))
+        self.protagonist = project.subject_points.get("protagonist")
+        self.counterpart = project.subject_points.get("counterpart")
+        self.focus_source = str(project.source_image)
+
+        manifest, palette = project.manifest, project.palette
+        channel = self._bridge_channel(manifest.get("channel"), self.channel.get())
+        preferred = str(manifest.get("preferred_typography", "") or "").strip()
+        if preferred not in preset_names(channel):
+            preferred = preset_names(channel)[0]
+        palette_values = {
+            "fill_color": palette.get("fill_color"), "stroke_color": palette.get("stroke_color"),
+            "highlight_color": palette.get("highlight_color"), "glow_strength": palette.get("glow_strength"),
+            "shadow_strength": palette.get("shadow_strength"), "outline_width": palette.get("outline_width"),
+        }
+        variables = {"fill_color": self.composer_fill, "stroke_color": self.composer_stroke,
+            "highlight_color": self.composer_highlight, "glow_strength": self.composer_glow,
+            "shadow_strength": self.composer_shadow, "outline_width": self.composer_outline}
+
+        if refresh:
+            # A changed palette value is imported only if its control still matches the old imported value.
+            for key, variable in variables.items():
+                value = palette_values.get(key)
+                if value in (None, ""):
+                    continue
+                prior = old_palette.get(key)
+                if prior is not None and str(variable.get()) == str(prior):
+                    variable.set(value)
+            state_keys = {"fill_color": "fill_color", "stroke_color": "stroke_color",
+                "highlight_color": "highlight_color", "glow_strength": "glow_strength",
+                "shadow_strength": "shadow_strength", "outline_width": "outline_width"}
+            for state in self.composer_states.values():
+                for palette_key, state_key in state_keys.items():
+                    prior = old_palette.get(palette_key)
+                    if prior is not None and str(state.get(state_key)) == str(prior):
+                        state[state_key] = variables[palette_key].get()
+            old_positions = self._image_bridge_position_baselines
+            new_positions = project.composition.get("positions", {})
+            for code, state in self.composer_states.items():
+                current_positions = state.get("positions", {})
+                baseline = old_positions.get(code, {})
+                for role, new_box in new_positions.items():
+                    old_box = baseline.get(role, current_positions.get(role))
+                    if old_box is not None and tuple(current_positions.get(role, ())) == tuple(old_box):
+                        current_positions[role] = tuple(new_box)
+                        baseline[role] = tuple(new_box)
+                self.composer_positions[code] = dict(current_positions)
+                self._image_bridge_position_baselines[code] = dict(baseline)
+            self._image_bridge_palette = {key: value for key, value in palette_values.items() if value not in (None, "")}
+        else:
+            self.channel.set(channel)
+            self.composer_channel.set(channel)
+            self.typography_style.set(preferred)
+            self.composer_style.set(preferred)
+            self.template_title.set(str(manifest.get("title") or self.template_title.get()))
+            self.template_subtitle.set(str(manifest.get("subtitle") or self.template_subtitle.get()))
+            self.template_episode.set(self._bridge_episode(manifest.get("episode")) or self.template_episode.get())
+            self.story_type.set(str(manifest.get("story_type") or self.story_type.get()))
+            self.composer_title.set(self.template_title.get())
+            self.composer_subtitle.set(self.template_subtitle.get())
+            self.composer_episode.set(self.template_episode.get())
+            self.composer_story.set(self.story_type.get())
+            preset = get_preset(preferred, channel)
+            palette_values = {key: value if value not in (None, "") else default for key, value, default in (
+                ("fill_color", palette_values["fill_color"], preset.fill),
+                ("stroke_color", palette_values["stroke_color"], preset.outline),
+                ("highlight_color", palette_values["highlight_color"], preset.accent),
+                ("glow_strength", palette_values["glow_strength"], 1.0),
+                ("shadow_strength", palette_values["shadow_strength"], 0.9),
+                ("outline_width", palette_values["outline_width"], preset.outline_width))}
+            for key, variable in variables.items():
+                variable.set(palette_values[key])
+            self._image_bridge_palette = dict(palette_values)
+            self.composer_states.clear()
+            self.composer_positions = {code: {} for code in ("A_PERSON", "B_EMOTION", "C_STORY")}
+            for code in self.composer_positions:
+                state = self._composer_default_state(code)
+                state.update(fill_color=self.composer_fill.get(), stroke_color=self.composer_stroke.get(),
+                    highlight_color=self.composer_highlight.get(), glow_strength=self.composer_glow.get(),
+                    shadow_strength=self.composer_shadow.get(), outline_width=self.composer_outline.get())
+                state["positions"].update(project.composition.get("positions", {}))
+                self.composer_states[code] = state
+                self.composer_positions[code] = dict(state["positions"])
+            self._image_bridge_position_baselines = {
+                code: dict(state["positions"]) for code, state in self.composer_states.items()}
+
+        if refresh and previous_project and previous_project.folder != project.folder:
+            refresh = False
+        self.build_composer_backgrounds()
+        if project.warnings:
+            self.status.set("Image Bridge: " + "; ".join(project.warnings))
+        else:
+            self.status.set("Image Bridge project loaded: " + project.folder.name)
+        return True
+
+    @staticmethod
+    def _image_bridge_status_text(status):
+        labels = (("clean_canvas", "clean canvas"), ("safe_zones", "safe zones"),
+                  ("subjects", "subject boxes"), ("palette", "palette"), ("manifest", "manifest"))
+        return " · ".join(f"{name} {'loaded' if status.get(key) else 'missing/fallback'}" for key, name in labels)
+
+    def refresh_image_project(self):
+        folder = self.image_project.folder if self.image_project else (Path(self.src.get()).parent if self.src.get() else None)
+        if folder is None:
+            return self.open_image_project()
+        return self.load_image_project_folder(folder, refresh=self.image_project is not None)
+
+    def _launch_image_action(self, action):
+        if not self.image_project:
+            return messagebox.showinfo("Image Bridge", "먼저 프로젝트 폴더를 열어 주세요.")
+        result = launch_generate(self.image_project.folder) if action == "generate" else launch_edit(self.image_project.folder)
+        messagebox.showinfo("Image Bridge", result.message)
+        return result
+
+    def launch_image_generate(self):
+        return self._launch_image_action("generate")
+
+    def launch_image_edit(self):
+        return self._launch_image_action("edit")
+
     def apply_composer_result(self):
         code = self.composer_code.get()
         if self.composer_result is None:
@@ -997,6 +1163,17 @@ class App(tk.Tk):
 
 def main():
     # Headless hook used only to validate the packaged engine on real Windows paths.
+    if len(sys.argv) == 3 and sys.argv[1] == "--self-test-project":
+        app = App()
+        try:
+            if not app.load_image_project_folder(sys.argv[2]):
+                raise SystemExit(2)
+            app.update_idletasks(); app.update()
+            if len(app.composer_bases) != 3 or app.composer_result is None:
+                raise RuntimeError("Image Bridge project did not produce all three live previews")
+        finally:
+            app.destroy()
+        return
     if len(sys.argv) == 4 and sys.argv[1] == "--self-test":
         generate_candidates(sys.argv[2], sys.argv[3], "Tokyo Chill", "완성 썸네일(글자 보호)", "자동")
         return
