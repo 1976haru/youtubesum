@@ -14,6 +14,7 @@ from typography.svg_badge_renderer import badge_svg, render_svg_png
 from typography.storage_assets import load_image_storage_assets
 from typography.text_renderer_skia import render_title
 from typography.text_style import preset_names
+from typography.background_fit import analyze_background, apply_adaptive_backdrop
 
 
 JAPANESE_SNAPSHOT = (
@@ -110,6 +111,32 @@ class ProfessionalTypographyTests(unittest.TestCase):
             self.assertEqual("reference_thumb.png", assets.reference_thumbnail.name)
         self.assertEqual(6, len(preset_names("Tokyo Chill")))
         self.assertEqual(6, len(preset_names("OLD POP LOUNGE")))
+
+    def test_background_fit_scores_busy_regions_and_adds_adaptive_overlay(self):
+        y, x = np.indices((720, 1280))
+        checker = (((x // 8 + y // 8) % 2) * 190 + 25).astype(np.uint8)
+        busy = np.dstack((checker, np.roll(checker, 3, axis=1), np.roll(checker, 5, axis=0)))
+        analysis = analyze_background(busy, (50, 350, 850, 240), [(0.2, 0.52, 0.16, 0.25)])
+        fitted, reported = apply_adaptive_backdrop(busy, (50, 350, 850, 240), subject_boxes=[(0.2, 0.52, 0.16, 0.25)])
+        self.assertLess(analysis.readability, 0.68)
+        self.assertTrue(analysis.recommend_soft_plate)
+        self.assertTrue(analysis.recommend_gradient)
+        self.assertEqual(analysis.dominant_color, reported.dominant_color)
+        self.assertGreater(float(cv2.absdiff(fitted, busy).mean()), 0.5)
+
+    def test_project_storage_new_sidecar_names_are_detected(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw); source = folder / "source.png"; source.touch()
+            (folder / "canvas_clean.png").touch(); (folder / "preview_reference.png").touch()
+            (folder / "safe_zones.json").write_text('{"zones": [[0.1, 0.2, 0.3, 0.4]]}', encoding="utf-8")
+            (folder / "palette.json").write_text('{"fill_color": "#F0E0D0"}', encoding="utf-8")
+            (folder / "composition.json").write_text('{"positions": {"main_title": [20, 30, 400, 160]}}', encoding="utf-8")
+            assets = load_image_storage_assets(source)
+            self.assertEqual("canvas_clean.png", assets.source_image.name)
+            self.assertEqual("preview_reference.png", assets.reference_thumbnail.name)
+            self.assertEqual(1, len(assets.safe_zones))
+            self.assertEqual("#F0E0D0", assets.palette["fill_color"])
+            self.assertIn("positions", assets.composition)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -39,7 +40,7 @@ def _measure(text: str, size: float, channel: str, preferred: str | None,
 
 
 def _select_line_candidate(text: str, initial_size: int, box, channel: str, style: TextStyle,
-                           max_lines: int, manual_breaks: str, letter_spacing: float,
+                           max_lines: int, manual_breaks: str, letter_spacing: float, line_spacing: float,
                            registry: FontRegistry):
     width = box[2]
     available_height = box[3]
@@ -48,11 +49,11 @@ def _select_line_candidate(text: str, initial_size: int, box, channel: str, styl
         measure = lambda line: _measure(line, font_size, channel, style.preferred_family, letter_spacing, registry)
         if manual_breaks.strip():
             chosen = choose_line_break(text, measure, width, max_lines, manual_breaks)
-            if chosen.width_ratio <= 1.03 and len(chosen.lines) * font_size * 1.17 <= available_height:
+            if chosen.width_ratio <= 1.03 and len(chosen.lines) * font_size * line_spacing <= available_height:
                 return chosen, font_size
         choices = score_line_breaks(text, measure, width, max_lines)
         acceptable = [candidate for candidate in choices if candidate.width_ratio <= 1.0
-                      and len(candidate.lines) * font_size * 1.17 <= available_height]
+                      and len(candidate.lines) * font_size * line_spacing <= available_height]
         if acceptable:
             return acceptable[0], font_size
     measure = lambda line: _measure(line, minimum_size, channel, style.preferred_family, letter_spacing, registry)
@@ -142,9 +143,16 @@ def render_title(image_bgr: np.ndarray, text: str, rect: tuple[int, int, int, in
                  glow_intensity: float = 1.0, shadow_intensity: float = 0.9,
                  highlight_word: str = "", max_lines: int = 3, manual_breaks: str = "",
                  safe_zones=(), subject_boxes=(), supersample: int = 2,
-                 show_safe_overlay: bool = False, registry: FontRegistry | None = None) -> RenderedTitle:
+                 show_safe_overlay: bool = False, registry: FontRegistry | None = None,
+                 fill_color: str | None = None, stroke_color: str | None = None,
+                 highlight_color: str | None = None, letter_spacing: float | None = None,
+                 line_spacing: float = 1.17) -> RenderedTitle:
     registry = registry or get_font_registry()
     style = get_preset(style_name, channel)
+    style = replace(style, fill=fill_color or style.fill, outline=stroke_color or style.outline,
+                    accent=highlight_color or style.accent,
+                    letter_spacing=style.letter_spacing if letter_spacing is None else float(letter_spacing))
+    line_spacing = max(0.82, min(1.65, float(line_spacing)))
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     x, y, width, height = rect
     safe = [_normalize_zone(zone, image_bgr.shape[1], image_bgr.shape[0]) for zone in safe_zones]
@@ -165,7 +173,7 @@ def render_title(image_bgr: np.ndarray, text: str, rect: tuple[int, int, int, in
     if style.senior:
         nominal = round(nominal * 1.10)
     chosen, font_size = _select_line_candidate(text, nominal, rect, channel, style, max_lines,
-                                               manual_breaks, style.letter_spacing, registry)
+                                               manual_breaks, style.letter_spacing, line_spacing, registry)
     scaled = skia.Surface.MakeRasterN32Premul(image_bgr.shape[1] * supersample,
                                                image_bgr.shape[0] * supersample)
     canvas = scaled.getCanvas()
@@ -180,7 +188,7 @@ def render_title(image_bgr: np.ndarray, text: str, rect: tuple[int, int, int, in
             canvas.drawRect(skia.Rect.MakeXYWH(zx * supersample, zy * supersample,
                                                zw * supersample, zh * supersample), overlay)
     rows = chosen.lines
-    baseline_step = min(font_size * 1.17, height / max(1, len(rows)))
+    baseline_step = min(font_size * line_spacing, height / max(1, len(rows)))
     total_height = baseline_step * len(rows)
     baseline = y + (height - total_height) / 2 + font_size * 0.94
     extents: list[tuple[int, int, int, int]] = []

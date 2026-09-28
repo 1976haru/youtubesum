@@ -201,6 +201,53 @@ class CandidateValidation(unittest.TestCase):
             finally:
                 app.destroy()
 
+    def test_live_composer_debounce_previews_drag_undo_and_independent_candidates(self):
+        try:
+            from app import App
+            app = App()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk desktop is unavailable: {exc}")
+        try:
+            base = np.full((720, 1280, 3), (38, 50, 72), dtype=np.uint8)
+            cv2.circle(base, (900, 280), 150, (78, 133, 180), -1)
+            app.composer_bases["A_PERSON"] = base.copy()
+            app.composer_states["A_PERSON"] = app._composer_default_state("A_PERSON")
+            app.composer_positions["A_PERSON"] = dict(app.composer_states["A_PERSON"]["positions"])
+            app._render_live_composer()
+            self.assertEqual((720, 1280, 3), app.composer_result.shape)
+            self.assertTrue(app.composer_preview_340.cget("image"))
+            self.assertTrue(app.composer_preview_180.cget("image"))
+
+            before = app.composer_result.copy()
+            app.composer_title_size.set(126)
+            app.after(230, app.quit); app.mainloop()
+            self.assertEqual(126, app.composer_states["A_PERSON"]["title_size"])
+            self.assertGreater(float(cv2.absdiff(before, app.composer_result).mean()), 0.2)
+
+            original_box = app.composer_positions["A_PERSON"]["main_title"]
+            class Event: pass
+            start = Event(); start.x = 100; start.y = 110
+            move = Event(); move.x = 132; move.y = 126
+            app._composer_drag_start(start); app._composer_drag_motion(move); app._composer_drag_end(move)
+            moved_box = app.composer_positions["A_PERSON"]["main_title"]
+            self.assertNotEqual(original_box, moved_box)
+            app.composer_undo()
+            self.assertEqual(original_box, app.composer_positions["A_PERSON"]["main_title"])
+            app.composer_redo_action()
+            self.assertEqual(moved_box, app.composer_positions["A_PERSON"]["main_title"])
+
+            app.composer_code.set("B_EMOTION"); app._composer_candidate_changed()
+            app.composer_title_size.set(84)
+            app.composer_code.set("A_PERSON"); app._composer_candidate_changed()
+            self.assertEqual(126, app.composer_title_size.get())
+            app._composer_apply_style("Warm Gold", "OLD POP LOUNGE")
+            self.assertEqual("Warm Gold", app.composer_style.get())
+            self.assertEqual("OLD POP LOUNGE", app.composer_channel.get())
+            app._load_composer_style_cards()
+            self.assertEqual(12, len(app.composer_style_refs))
+        finally:
+            app.destroy()
+
     def test_one_and_multiple_faces_are_supported(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw:
             source = Path(raw) / "people.png"

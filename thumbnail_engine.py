@@ -259,7 +259,8 @@ def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode
                            story_type="자동", episode="EP.001", title="", subtitle="",
                            typography_style=None, auto_two_line=True, emphasize_keyword=True,
                            keyword="", title_size=100, manual_breaks="", outline_thickness=None,
-                           glow_intensity=1.0, shadow_intensity=0.9, show_safe_overlay=False):
+                           glow_intensity=1.0, shadow_intensity=0.9, show_safe_overlay=False,
+                           live_options=None, render_text=True):
     storage = load_image_storage_assets(src)
     image = _read(storage.source_image)
     faces = _detect_faces(image)
@@ -394,12 +395,34 @@ def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode
             framed = _fit_on_canvas(image, "matte") if code.startswith("C_") or (crop == (0, 0, iw, ih) and abs(iw / ih - 16 / 9) > 0.01) else _crop_resize(image, crop)
             if channel == "OLD POP LOUNGE":
                 framed = _grade(framed, "story" if code.startswith("C_") else "emotion")
+            def mapped_subject(box):
+                if isinstance(box, dict):
+                    box = box.get("bbox", box.get("box", box.get("rect")))
+                if not isinstance(box, (list, tuple)) or len(box) != 4:
+                    return None
+                bx, by, bw, bh = map(float, box)
+                if max(abs(bx), abs(by), abs(bw), abs(bh)) <= 1:
+                    bx, bw, by, bh = bx * iw, bw * iw, by * ih, bh * ih
+                cx0, cy0, cx1, cy1 = crop
+                return ((bx - cx0) / max(1, cx1 - cx0), (by - cy0) / max(1, cy1 - cy0),
+                        bw / max(1, cx1 - cx0), bh / max(1, cy1 - cy0))
+            render_subjects = [item for item in (mapped_subject(box) for box in stored_subjects) if item]
+            render_safe_zones = [item for item in (mapped_subject(box) for box in safe_zones) if item]
+            render_subjects.extend((max(0.0, min(1.0, (fx - crop[0]) / max(1, crop[2] - crop[0]))),
+                                    max(0.0, min(1.0, (fy - crop[1]) / max(1, crop[3] - crop[1]))),
+                                    fw / max(1, crop[2] - crop[0]), fh / max(1, crop[3] - crop[1]))
+                                   for fx, fy, fw, fh in detected)
+            if not render_text:
+                generated.append(Candidate(code, label, framed, note, crop_box=crop,
+                                           typography={"subject_boxes": render_subjects,
+                                                       "safe_zones": render_safe_zones}))
+                continue
             rendered, typography = render_candidate_text(framed, channel, code, story_type, episode,
                 title, subtitle, typography_style, auto_two_line, emphasize_keyword, keyword, title_size,
                 outline_thickness=outline_thickness, glow_intensity=glow_intensity,
                 shadow_intensity=shadow_intensity, manual_breaks=manual_breaks,
-                subject_boxes=stored_subjects, safe_zones=safe_zones,
-                show_safe_overlay=show_safe_overlay)
+                subject_boxes=render_subjects, safe_zones=render_safe_zones,
+                show_safe_overlay=show_safe_overlay, live_options=live_options)
             typography["image_storage"] = {"source": storage.source_kind,
                 "cleaned_canvas": str(storage.cleaned_canvas) if storage.cleaned_canvas else None,
                 "reference_thumbnail": str(storage.reference_thumbnail) if storage.reference_thumbnail else None}

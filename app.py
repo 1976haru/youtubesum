@@ -10,10 +10,16 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
+import cv2
+import numpy as np
 from motion_engine import PRESETS, render
 from typography_engine import TYPOGRAPHY_PRESETS, preset_names
 from typography.linebreak_engine import choose_line_break
 from typography.storage_assets import load_image_storage_assets
+from typography.text_style import get_preset, PRESETS_BY_CHANNEL
+from typography.text_renderer_skia import render_title
+from typography.thumbnail_layouts import choose_layout
+from layout_engine import render_candidate_text
 from thumbnail_engine import (APP_VERSION, COMPLETED_MODE, RAW_MODE, TEMPLATE_MODE,
                               candidate_similarities, candidates_too_similar,
                               create_candidate_images, generate_candidates, record_test,
@@ -39,7 +45,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"YouTube Dynamic Thumbnail Studio v{APP_VERSION}")
-        self.geometry("1360x1020"); self.minsize(1200, 900)
+        self.geometry("1540x1040"); self.minsize(1320, 920)
         self.src = tk.StringVar(); self.channel = tk.StringVar(value="Tokyo Chill")
         self.source_mode = tk.StringVar(value=TEMPLATE_MODE)
         self.focus_mode = tk.StringVar(value="자동")
@@ -66,12 +72,51 @@ class App(tk.Tk):
         self.winner = tk.StringVar(value="B"); self.db = APP_HOME / "youtube_test_history.csv"
         self.candidates = []; self.preview_refs = []; self.last_output_dir = None
         self.protagonist = None; self.counterpart = None; self.focus_source = None
+        self.composer_code = tk.StringVar(value="A_PERSON")
+        self.composer_role = tk.StringVar(value="main_title")
+        self.composer_title_size = tk.IntVar(value=108)
+        self.composer_outline = tk.DoubleVar(value=10.0)
+        self.composer_shadow = tk.DoubleVar(value=0.9)
+        self.composer_glow = tk.DoubleVar(value=1.0)
+        self.composer_line_spacing = tk.DoubleVar(value=1.17)
+        self.composer_letter_spacing = tk.DoubleVar(value=0.0)
+        self.composer_alignment = tk.StringVar(value="left")
+        self.composer_anchor = tk.StringVar(value="lower-left")
+        self.composer_fill = tk.StringVar(value="#FFFFFF")
+        self.composer_stroke = tk.StringVar(value="#17090C")
+        self.composer_highlight = tk.StringVar(value="#FFE23A")
+        self.composer_soft_plate = tk.BooleanVar(value=True)
+        self.composer_gradient = tk.BooleanVar(value=True)
+        self.composer_safe_overlay = tk.BooleanVar(value=False)
+        self.composer_style = tk.StringVar(value="Japanese Impact")
+        self.composer_channel = tk.StringVar(value="Tokyo Chill")
+        self.composer_title = tk.StringVar(value=self.template_title.get())
+        self.composer_subtitle = tk.StringVar(value=self.template_subtitle.get())
+        self.composer_episode = tk.StringVar(value=self.template_episode.get())
+        self.composer_story = tk.StringVar(value=self.story_type.get())
+        self.composer_positions = {code: {} for code in ("A_PERSON", "B_EMOTION", "C_STORY")}
+        self.composer_states = {}
+        self.composer_bases = {}
+        self.composer_subjects = {}
+        self.composer_safe_zones = {}
+        self.composer_result = None
+        self.composer_metadata = {}
+        self.composer_image_refs = []
+        self.composer_style_refs = []
+        self.composer_history = {code: [] for code in ("A_PERSON", "B_EMOTION", "C_STORY")}
+        self.composer_redo = {code: [] for code in ("A_PERSON", "B_EMOTION", "C_STORY")}
+        self._composer_render_job = None
+        self._composer_history_job = None
+        self._composer_pending_before = None
+        self._composer_loading_state = False
+        self._composer_drag = None
+        self._composer_cards_loaded = False
         ttk.Label(self, text="YOUTUBE DYNAMIC THUMBNAIL STUDIO", font=("Segoe UI", 18, "bold")).pack(pady=(14, 2))
         ttk.Label(self, text=f"v{APP_VERSION} · 3후보 미리보기 + Motion Intro · FFmpeg 포함", foreground="#555").pack()
         ttk.Label(self, text="Motion uses FFmpeg · LGPLv3 · 같은 폴더 ydts_ffmpeg로 호환 빌드 교체 가능", foreground="#555").pack()
         ttk.Button(self, text="오픈소스 라이선스", command=self.show_licenses).pack(anchor="e", padx=18, pady=(0, 2))
         notebook = ttk.Notebook(self); notebook.pack(fill="both", expand=True, padx=14, pady=10)
-        self._tab_candidates(notebook); self._tab_motion(notebook); self._tab_history(notebook)
+        self._tab_candidates(notebook); self._tab_live_composer(notebook); self._tab_motion(notebook); self._tab_history(notebook)
         ttk.Label(self, textvariable=self.status, wraplength=1100).pack(pady=(0, 8))
         self.src.trace_add("write", self._source_changed)
         self.source_mode.trace_add("write", lambda *_: self._update_mode_guard())
@@ -345,6 +390,492 @@ class App(tk.Tk):
         self.selected_preview_var.trace_add("write", lambda *_: self.show_selected_preview(["A", "B", "C"].index(self.selected_preview_var.get())))
         self.save_all_button = ttk.Button(tab, text="3개 모두 저장", command=self.save_all, state="disabled")
         self.save_all_button.pack(pady=8, ipadx=30, ipady=5)
+
+    def _tab_live_composer(self, notebook):
+        tab = ttk.Frame(notebook); notebook.add(tab, text="Live Composer")
+        toolbar = ttk.Frame(tab); toolbar.pack(fill="x", padx=10, pady=5)
+        ttk.Button(toolbar, text="프로젝트 폴더 열기", command=self.open_composer_project).pack(side="left")
+        ttk.Button(toolbar, text="A/B/C 배경 생성", command=self.build_composer_backgrounds).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="배경 생성", command=lambda: self._composer_placeholder("배경 생성")).pack(side="left", padx=(18, 3))
+        ttk.Button(toolbar, text="배경 편집", command=lambda: self._composer_placeholder("배경 편집")).pack(side="left", padx=3)
+        ttk.Button(toolbar, text="image에서 새로고침", command=self.refresh_composer_project).pack(side="left", padx=3)
+        ttk.Label(toolbar, text="프로젝트 sidecar 자동 감지 · 없으면 기존 로컬 입력 사용", foreground="#555").pack(side="right")
+        text_fields = ttk.Frame(tab); text_fields.pack(fill="x", padx=10, pady=(0, 4))
+        for label, variable, width in (("Main title", self.composer_title, 25), ("Subtitle", self.composer_subtitle, 26),
+                                       ("EP", self.composer_episode, 9), ("Story label", self.composer_story, 16)):
+            ttk.Label(text_fields, text=label).pack(side="left", padx=(2, 3))
+            ttk.Entry(text_fields, textvariable=variable, width=width).pack(side="left", padx=(0, 8))
+
+        body = ttk.Frame(tab); body.pack(fill="both", expand=True, padx=10, pady=4)
+        preview = ttk.Frame(body); preview.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        selection = ttk.Frame(preview); selection.pack(fill="x", pady=(0, 5))
+        ttk.Label(selection, text="후보").pack(side="left")
+        for code, label in (("A_PERSON", "A · PERSON"), ("B_EMOTION", "B · EMOTION"), ("C_STORY", "C · STORY")):
+            ttk.Radiobutton(selection, text=label, value=code, variable=self.composer_code,
+                            command=self._composer_candidate_changed).pack(side="left", padx=5)
+        ttk.Label(selection, text="편집 블록").pack(side="left", padx=(16, 4))
+        self.composer_role_combo = ttk.Combobox(selection, state="readonly", width=18,
+            textvariable=self.composer_role, values=("channel_label", "story_label", "episode_badge", "main_title", "subtitle"))
+        self.composer_role_combo.pack(side="left")
+        self.composer_role_combo.bind("<<ComboboxSelected>>", lambda _event: self._draw_composer_canvas())
+        ttk.Button(selection, text="Undo", command=self.composer_undo).pack(side="right", padx=2)
+        ttk.Button(selection, text="Redo", command=self.composer_redo_action).pack(side="right", padx=2)
+
+        self.composer_canvas_width, self.composer_canvas_height = 832, 468
+        self.composer_canvas = tk.Canvas(preview, width=self.composer_canvas_width,
+            height=self.composer_canvas_height, background="#1b1d22", highlightthickness=1,
+            highlightbackground="#777")
+        self.composer_canvas.pack(anchor="center", fill="none", expand=False)
+        self.composer_canvas.create_text(416, 234, text="프로젝트 이미지를 열거나 A/B/C 배경을 생성하세요",
+            fill="white", font=("Segoe UI", 15), tags=("placeholder",))
+        self.composer_canvas.bind("<ButtonPress-1>", self._composer_drag_start)
+        self.composer_canvas.bind("<B1-Motion>", self._composer_drag_motion)
+        self.composer_canvas.bind("<ButtonRelease-1>", self._composer_drag_end)
+        self.composer_info = tk.StringVar(value="1280 × 720 출력 · 변경 내용은 150ms debounce로 반영됩니다")
+        ttk.Label(preview, textvariable=self.composer_info, anchor="w").pack(fill="x", pady=3)
+        mini = ttk.Frame(preview); mini.pack(fill="x", pady=(5, 0))
+        self.composer_preview_340 = ttk.Label(mini, text="340px 홈 미리보기", anchor="center", width=42)
+        self.composer_preview_340.pack(side="left", padx=(50, 24))
+        self.composer_preview_180 = ttk.Label(mini, text="180px 소형 미리보기", anchor="center", width=24)
+        self.composer_preview_180.pack(side="left")
+
+        panel = ttk.Frame(body, width=470); panel.pack(side="right", fill="y"); panel.pack_propagate(False)
+        controls = ttk.LabelFrame(panel, text="실시간 타이포 컨트롤"); controls.pack(fill="x", pady=(0, 5))
+        self._composer_scale(controls, 0, "Title size", self.composer_title_size, 48, 150, integer=True)
+        self._composer_scale(controls, 1, "Outline width", self.composer_outline, 0, 22)
+        self._composer_scale(controls, 2, "Shadow", self.composer_shadow, 0, 1.5)
+        self._composer_scale(controls, 3, "Glow", self.composer_glow, 0, 1.5)
+        self._composer_scale(controls, 4, "Line spacing", self.composer_line_spacing, 0.85, 1.55)
+        self._composer_scale(controls, 5, "Letter spacing", self.composer_letter_spacing, -2.0, 4.0)
+        align_row = ttk.Frame(controls); align_row.grid(row=6, column=0, columnspan=4, sticky="ew", padx=5, pady=2)
+        ttk.Label(align_row, text="정렬").pack(side="left")
+        ttk.Combobox(align_row, textvariable=self.composer_alignment, state="readonly", width=10,
+                     values=("left", "center", "right")).pack(side="left", padx=4)
+        ttk.Label(align_row, text="Anchor").pack(side="left", padx=(10, 2))
+        ttk.Combobox(align_row, textvariable=self.composer_anchor, state="readonly", width=14,
+            values=("lower-left", "lower-center", "lower-right", "upper-left", "upper-right", "center")).pack(side="left")
+        for row, label, variable in ((7, "Fill", self.composer_fill), (8, "Stroke", self.composer_stroke),
+                                     (9, "Highlight", self.composer_highlight)):
+            ttk.Label(controls, text=label).grid(row=row, column=0, sticky="e", padx=4, pady=2)
+            ttk.Entry(controls, textvariable=variable, width=12).grid(row=row, column=1, sticky="w", padx=3, pady=2)
+            ttk.Label(controls, text="#RRGGBB").grid(row=row, column=2, sticky="w")
+        toggles = ttk.Frame(controls); toggles.grid(row=10, column=0, columnspan=4, sticky="ew", padx=5)
+        ttk.Checkbutton(toggles, text="Soft plate", variable=self.composer_soft_plate).pack(side="left")
+        ttk.Checkbutton(toggles, text="배경 gradient", variable=self.composer_gradient).pack(side="left", padx=6)
+        ttk.Checkbutton(toggles, text="안전영역", variable=self.composer_safe_overlay).pack(side="right")
+        self.background_fit_info = tk.StringVar(value="배경 분석: 이미지 대기")
+        ttk.Label(controls, textvariable=self.background_fit_info, foreground="#43546a", wraplength=440).grid(
+            row=11, column=0, columnspan=4, sticky="w", padx=7, pady=2)
+        for variable in (self.composer_title_size, self.composer_outline, self.composer_shadow,
+                         self.composer_glow, self.composer_line_spacing, self.composer_letter_spacing,
+                         self.composer_alignment, self.composer_anchor, self.composer_fill,
+                         self.composer_stroke, self.composer_highlight, self.composer_soft_plate,
+                         self.composer_gradient, self.composer_safe_overlay):
+            variable.trace_add("write", self._composer_control_changed)
+        for variable in (self.composer_title, self.composer_subtitle, self.composer_episode, self.composer_story):
+            variable.trace_add("write", self._composer_control_changed)
+        self.composer_anchor.trace_add("write", self._composer_apply_anchor)
+        ttk.Button(panel, text="선택 후보에 편집 반영", command=self.apply_composer_result).pack(fill="x", pady=(0, 5))
+
+        cards = ttk.LabelFrame(panel, text="스타일 카드 · 클릭 즉시 적용"); cards.pack(fill="both", expand=True)
+        self.composer_style_tabs = ttk.Notebook(cards); self.composer_style_tabs.pack(fill="both", expand=True, padx=3, pady=3)
+        self.composer_style_frames = {}
+        for channel, title in (("Tokyo Chill", "Tokyo Chill"), ("OLD POP LOUNGE", "Old Pop Lounge")):
+            frame = ttk.Frame(self.composer_style_tabs); self.composer_style_tabs.add(frame, text=title)
+            self.composer_style_frames[channel] = frame
+        self.composer_style_tabs.bind("<<NotebookTabChanged>>", lambda _event: self._load_composer_style_cards())
+
+    @staticmethod
+    def _composer_scale(parent, row, label, variable, low, high, integer=False):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=4)
+        scale = ttk.Scale(parent, from_=low, to=high, variable=variable, orient="horizontal", length=154)
+        scale.grid(row=row, column=1, sticky="ew", padx=3, pady=2)
+        ttk.Label(parent, textvariable=variable, width=6).grid(row=row, column=2, sticky="w")
+        parent.columnconfigure(1, weight=1)
+
+    def _composer_default_state(self, code):
+        channel = self.composer_channel.get()
+        names = preset_names(channel)
+        style_name = self.composer_style.get()
+        if style_name not in names:
+            style_name = names[0]
+        preset = get_preset(style_name, channel)
+        layout = choose_layout(code, channel, self.composer_story.get(), self.composer_episode.get(), 108)
+        positions = {
+            "channel_label": (30, 20, 270, 68),
+            "story_label": layout.badge_box,
+            "episode_badge": (980, 20, 270, 68),
+            "main_title": layout.title_box,
+            "subtitle": (48, 662 if channel == "Tokyo Chill" else 654, 1160, 48),
+        }
+        return {"channel": channel, "style": style_name, "title_size": 108,
+            "outline_width": preset.outline_width, "shadow_strength": 0.9, "glow_strength": 1.0,
+            "line_spacing": 1.17, "letter_spacing": preset.letter_spacing,
+            "alignment": layout.align, "anchor": {"A_PERSON": "lower-left", "B_EMOTION": "lower-center", "C_STORY": "upper-left"}.get(code, "lower-left"),
+            "fill_color": preset.fill, "stroke_color": preset.outline, "highlight_color": preset.accent,
+            "title_text": self.composer_title.get(), "subtitle_text": self.composer_subtitle.get(),
+            "episode_text": self.composer_episode.get(), "story_text": self.composer_story.get(),
+            "soft_plate": True, "gradient": True, "safe_overlay": False, "positions": positions}
+
+    def _composer_snapshot(self, code=None):
+        code = code or self.composer_code.get()
+        return {"channel": self.composer_channel.get(), "style": self.composer_style.get(),
+            "title_size": int(self.composer_title_size.get()), "outline_width": float(self.composer_outline.get()),
+            "shadow_strength": float(self.composer_shadow.get()), "glow_strength": float(self.composer_glow.get()),
+            "line_spacing": float(self.composer_line_spacing.get()), "letter_spacing": float(self.composer_letter_spacing.get()),
+            "alignment": self.composer_alignment.get(), "anchor": self.composer_anchor.get(),
+            "fill_color": self.composer_fill.get().strip(), "stroke_color": self.composer_stroke.get().strip(),
+            "highlight_color": self.composer_highlight.get().strip(), "soft_plate": bool(self.composer_soft_plate.get()),
+            "gradient": bool(self.composer_gradient.get()), "safe_overlay": bool(self.composer_safe_overlay.get()),
+            "title_text": self.composer_title.get(), "subtitle_text": self.composer_subtitle.get(),
+            "episode_text": self.composer_episode.get(), "story_text": self.composer_story.get(),
+            "positions": {key: tuple(value) for key, value in self.composer_positions.get(code, {}).items()}}
+
+    def _composer_candidate_changed(self):
+        if not hasattr(self, "composer_canvas"):
+            return
+        code = self.composer_code.get()
+        if code not in self.composer_states:
+            self.composer_states[code] = self._composer_default_state(code)
+            self.composer_positions[code] = dict(self.composer_states[code]["positions"])
+        state = self.composer_states[code]
+        self._composer_loading_state = True
+        try:
+            self.composer_channel.set(state["channel"]); self.composer_style.set(state["style"])
+            self.composer_title_size.set(state["title_size"]); self.composer_outline.set(state["outline_width"])
+            self.composer_shadow.set(state["shadow_strength"]); self.composer_glow.set(state["glow_strength"])
+            self.composer_line_spacing.set(state["line_spacing"]); self.composer_letter_spacing.set(state["letter_spacing"])
+            self.composer_alignment.set(state["alignment"]); self.composer_anchor.set(state["anchor"])
+            self.composer_fill.set(state["fill_color"]); self.composer_stroke.set(state["stroke_color"])
+            self.composer_highlight.set(state["highlight_color"]); self.composer_soft_plate.set(state["soft_plate"])
+            self.composer_gradient.set(state["gradient"]); self.composer_safe_overlay.set(state["safe_overlay"])
+            self.composer_title.set(state["title_text"]); self.composer_subtitle.set(state["subtitle_text"])
+            self.composer_episode.set(state["episode_text"]); self.composer_story.set(state["story_text"])
+            self.composer_positions[code] = dict(state["positions"])
+        finally:
+            self._composer_loading_state = False
+        self._render_live_composer()
+
+    def _composer_control_changed(self, *_):
+        if self._composer_loading_state or not hasattr(self, "composer_canvas"):
+            return
+        code = self.composer_code.get()
+        previous = self.composer_states.get(code)
+        current = self._composer_snapshot(code)
+        if previous is None:
+            self.composer_states[code] = current
+        elif current != previous:
+            if self._composer_pending_before is None:
+                self._composer_pending_before = previous
+            self.composer_states[code] = current
+            if self._composer_history_job:
+                self.after_cancel(self._composer_history_job)
+            self._composer_history_job = self.after(420, self._commit_composer_history)
+        self._schedule_live_render()
+
+    def _commit_composer_history(self):
+        code = self.composer_code.get()
+        if self._composer_pending_before is not None:
+            history = self.composer_history.setdefault(code, [])
+            history.append(self._composer_pending_before)
+            del history[:-80]
+            self.composer_redo.setdefault(code, []).clear()
+            self._composer_pending_before = None
+        self._composer_history_job = None
+
+    def _schedule_live_render(self):
+        if self._composer_render_job:
+            self.after_cancel(self._composer_render_job)
+        self.composer_info.set("렌더 대기 · 150ms debounce")
+        self._composer_render_job = self.after(150, self._render_live_composer)
+
+    def _render_live_composer(self):
+        self._composer_render_job = None
+        code = self.composer_code.get()
+        base = self.composer_bases.get(code)
+        if base is None:
+            self.composer_canvas.delete("all")
+            self.composer_canvas.create_text(416, 234, text="프로젝트 이미지를 열거나 A/B/C 배경을 생성하세요",
+                fill="white", font=("Segoe UI", 15))
+            return
+        state = self._composer_snapshot(code)
+        try:
+            self.composer_result, self.composer_metadata = render_candidate_text(
+                base.copy(), state["channel"], code, state["story_text"], state["episode_text"],
+                state["title_text"], state["subtitle_text"], state["style"],
+                self.auto_two_line.get(), self.emphasize_keyword.get(), self.keyword.get(),
+                state["title_size"], outline_thickness=state["outline_width"],
+                glow_intensity=state["glow_strength"], shadow_intensity=state["shadow_strength"],
+                subject_boxes=self._composer_sidecar_subjects(),
+                safe_zones=self._composer_sidecar_safe_zones(),
+                show_safe_overlay=state["safe_overlay"], live_options=state)
+            if not state["positions"]:
+                roles = self.composer_metadata.get("roles", {})
+                self.composer_positions[code] = {name: tuple(box) for name, box in roles.items()}
+                state["positions"] = dict(self.composer_positions[code])
+                self.composer_states[code] = state
+            self._draw_composer_canvas()
+            self._draw_composer_minis()
+            fit = self.composer_metadata.get("background_fit", {})
+            self.background_fit_info.set(
+                f"가독성 {fit.get('readability', 0):.2f} · 피사체 충돌 {fit.get('subject_conflict', 0):.2f} · "
+                f"주색 {fit.get('dominant_color', '#000000')} / 포인트 {fit.get('accent_color', '#FFFFFF')} · "
+                f"자동 plate/gradient {'권장' if fit.get('soft_plate_recommended') else '선택'}")
+            self.composer_info.set(f"1280 × 720 · {code} · {state['style']} · 150ms debounce 렌더 완료")
+        except Exception as exc:
+            self.composer_info.set(f"미리보기 오류: {exc}")
+            logging.exception("Live Composer render failed")
+
+    def _draw_composer_canvas(self):
+        if self.composer_result is None:
+            return
+        rgb = cv2.cvtColor(self.composer_result, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb).resize((self.composer_canvas_width, self.composer_canvas_height), Image.Resampling.LANCZOS)
+        self._composer_canvas_ref = ImageTk.PhotoImage(image)
+        canvas = self.composer_canvas; canvas.delete("all")
+        canvas.create_image(0, 0, anchor="nw", image=self._composer_canvas_ref)
+        code, active = self.composer_code.get(), self.composer_role.get()
+        state = self._composer_snapshot(code)
+        boxes = state["positions"]
+        sx = self.composer_canvas_width / 1280; sy = self.composer_canvas_height / 720
+        for role, box in boxes.items():
+            x, y, w, h = box
+            color = "#45E6FF" if role == active else "#FFCA5C"
+            dash = () if role == active else (3, 4)
+            canvas.create_rectangle(x*sx, y*sy, (x+w)*sx, (y+h)*sy, outline=color,
+                                    width=2 if role == active else 1, dash=dash)
+            canvas.create_text(x*sx+4, y*sy+3, anchor="nw", text=role, fill=color,
+                               font=("Segoe UI", 8, "bold"))
+        title_bbox = self.composer_metadata.get("title", {}).get("bbox")
+        if title_bbox and active == "main_title":
+            x, y, w, h = title_bbox
+            canvas.create_rectangle(x*sx, y*sy, (x+w)*sx, (y+h)*sy, outline="#FFFFFF", width=1)
+
+    def _draw_composer_minis(self):
+        if self.composer_result is None:
+            return
+        rgb = cv2.cvtColor(self.composer_result, cv2.COLOR_BGR2RGB)
+        for label, size in ((self.composer_preview_340, (340, 191)), (self.composer_preview_180, (180, 101))):
+            image = Image.fromarray(rgb).resize(size, Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            label.configure(image=photo, text="")
+            if not hasattr(self, "_composer_mini_refs"):
+                self._composer_mini_refs = []
+            self._composer_mini_refs.append(photo)
+        self._composer_mini_refs = self._composer_mini_refs[-2:]
+
+    def _composer_drag_start(self, event):
+        code, role = self.composer_code.get(), self.composer_role.get()
+        boxes = self.composer_positions.get(code, {})
+        if role not in boxes:
+            return
+        self._commit_composer_history()
+        self._composer_drag = (code, role, event.x, event.y, tuple(boxes[role]), self._composer_snapshot(code))
+
+    def _composer_drag_motion(self, event):
+        if not self._composer_drag:
+            return
+        code, role, sx, sy, original, _before = self._composer_drag
+        scale_x = self.composer_canvas_width / 1280; scale_y = self.composer_canvas_height / 720
+        dx, dy = round((event.x - sx) / scale_x), round((event.y - sy) / scale_y)
+        x, y, w, h = original
+        x = max(0, min(1280 - w, x + dx)); y = max(0, min(720 - h, y + dy))
+        state = self.composer_states[code]
+        state["positions"][role] = (x, y, w, h)
+        self.composer_positions[code][role] = (x, y, w, h)
+        self._draw_composer_canvas()
+        self._schedule_live_render()
+
+    def _composer_drag_end(self, _event):
+        if not self._composer_drag:
+            return
+        code, _role, _sx, _sy, _original, before = self._composer_drag
+        after = self._composer_snapshot(code)
+        if after != before:
+            self.composer_history.setdefault(code, []).append(before)
+            self.composer_redo.setdefault(code, []).clear()
+        self._composer_drag = None
+
+    def _apply_composer_state(self, state):
+        code = self.composer_code.get()
+        self._composer_loading_state = True
+        try:
+            self.composer_channel.set(state["channel"]); self.composer_style.set(state["style"])
+            self.composer_title_size.set(state["title_size"]); self.composer_outline.set(state["outline_width"])
+            self.composer_shadow.set(state["shadow_strength"]); self.composer_glow.set(state["glow_strength"])
+            self.composer_line_spacing.set(state["line_spacing"]); self.composer_letter_spacing.set(state["letter_spacing"])
+            self.composer_alignment.set(state["alignment"]); self.composer_anchor.set(state["anchor"])
+            self.composer_fill.set(state["fill_color"]); self.composer_stroke.set(state["stroke_color"])
+            self.composer_highlight.set(state["highlight_color"]); self.composer_soft_plate.set(state["soft_plate"])
+            self.composer_gradient.set(state["gradient"]); self.composer_safe_overlay.set(state["safe_overlay"])
+            self.composer_title.set(state["title_text"]); self.composer_subtitle.set(state["subtitle_text"])
+            self.composer_episode.set(state["episode_text"]); self.composer_story.set(state["story_text"])
+            self.composer_positions[code] = dict(state["positions"])
+            self.composer_states[code] = state
+        finally:
+            self._composer_loading_state = False
+        self._schedule_live_render()
+
+    def composer_undo(self):
+        self._commit_composer_history()
+        code = self.composer_code.get(); history = self.composer_history.setdefault(code, [])
+        if history:
+            self.composer_redo.setdefault(code, []).append(self._composer_snapshot(code))
+            self._apply_composer_state(history.pop())
+
+    def composer_redo_action(self):
+        self._commit_composer_history()
+        code = self.composer_code.get(); redo = self.composer_redo.setdefault(code, [])
+        if redo:
+            self.composer_history.setdefault(code, []).append(self._composer_snapshot(code))
+            self._apply_composer_state(redo.pop())
+
+    def _composer_apply_anchor(self, *_):
+        if self._composer_loading_state:
+            return
+        code = self.composer_code.get(); state = self._composer_snapshot(code)
+        positions = state["positions"]; box = positions.get("main_title")
+        if not box:
+            return
+        x, y, w, h = box; anchor = self.composer_anchor.get()
+        x = {"lower-left": 42, "lower-center": (1280-w)//2, "lower-right": 1238-w,
+             "upper-left": 52, "upper-right": 1228-w, "center": (1280-w)//2}.get(anchor, x)
+        y = {"lower-left": 438, "lower-center": 414, "lower-right": 438,
+             "upper-left": 94, "upper-right": 94, "center": 260}.get(anchor, y)
+        positions["main_title"] = (x, y, w, h)
+        state["alignment"] = "center" if anchor in ("lower-center", "center") else ("right" if anchor.endswith("right") else "left")
+        self.composer_states[code] = state; self.composer_positions[code] = dict(positions)
+        self._composer_loading_state = True
+        try: self.composer_alignment.set(state["alignment"])
+        finally: self._composer_loading_state = False
+        self._schedule_live_render()
+
+    def _load_composer_style_cards(self):
+        if self._composer_cards_loaded:
+            return
+        self._composer_cards_loaded = True
+        for channel, frame in self.composer_style_frames.items():
+            for index, style in enumerate(PRESETS_BY_CHANNEL[channel]):
+                card = ttk.Frame(frame, relief="ridge", borderwidth=1)
+                card.grid(row=index // 3, column=index % 3, padx=3, pady=3, sticky="nsew")
+                background = np.zeros((180, 320, 3), dtype=np.uint8)
+                for row in range(180):
+                    t = row / 179
+                    background[row, :, :] = (np.array([26, 38, 58]) * (1-t) + np.array([88, 68, 72]) * t).astype(np.uint8)
+                sample = render_title(background, "Tokyo night / 思い出", (10, 62, 300, 104),
+                    style.name, channel, "center", 30, max_lines=2, supersample=1)
+                photo = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(sample.image, cv2.COLOR_BGR2RGB)).resize(
+                    (112, 63), Image.Resampling.LANCZOS))
+                self.composer_style_refs.append(photo)
+                button = ttk.Button(card, image=photo, text=style.name, compound="top",
+                    command=lambda style=style: self._composer_apply_style(style.name, style.channel))
+                button.pack(fill="both", expand=True, padx=2, pady=2)
+                frame.columnconfigure(index % 3, weight=1); frame.rowconfigure(index // 3, weight=1)
+
+    def _composer_apply_style(self, style_name, channel):
+        code = self.composer_code.get(); state = self.composer_states.get(code, self._composer_default_state(code))
+        style = get_preset(style_name, channel)
+        state.update(channel=channel, style=style_name, fill_color=style.fill,
+                     stroke_color=style.outline, highlight_color=style.accent,
+                     outline_width=style.outline_width, letter_spacing=style.letter_spacing)
+        self._apply_composer_state(state)
+
+    def _composer_sidecar_subjects(self):
+        return self.composer_subjects.get(self.composer_code.get(), ())
+
+    def _composer_sidecar_safe_zones(self):
+        return self.composer_safe_zones.get(self.composer_code.get(), ())
+
+    def open_composer_project(self):
+        folder = filedialog.askdirectory(title="이미지 프로젝트 폴더 선택")
+        if not folder:
+            return
+        root = Path(folder)
+        assets = load_image_storage_assets(root)
+        files = [path for path in root.iterdir() if path.suffix.casefold() in (".png", ".jpg", ".jpeg", ".webp")
+                 and path.name.casefold() not in ("preview_reference.png", "reference_thumb.png", "canvas_clean.png", "cleaned_canvas.png")]
+        source = assets.cleaned_canvas if assets.cleaned_canvas and assets.cleaned_canvas.is_file() else (files[0] if files else None)
+        if source is None:
+            return messagebox.showwarning("프로젝트", "폴더에서 사용할 이미지 파일을 찾지 못했습니다.")
+        self.src.set(str(source)); self.reference_src.set(str(assets.reference_thumbnail or ""))
+        self.composer_channel.set(self.channel.get())
+        palette = assets.palette
+        self.composer_fill.set(palette.get("fill_color", palette.get("fill", self.composer_fill.get())))
+        self.composer_stroke.set(palette.get("stroke_color", palette.get("outline", self.composer_stroke.get())))
+        self.composer_highlight.set(palette.get("highlight_color", palette.get("accent", self.composer_highlight.get())))
+        positions = assets.composition.get("positions", assets.composition.get("roles", {}))
+        code = self.composer_code.get()
+        if isinstance(positions, dict):
+            imported = {}
+            for key, value in positions.items():
+                if key not in ("channel_label", "story_label", "episode_badge", "main_title", "subtitle"):
+                    continue
+                box = value.get("bbox", value.get("box", value)) if isinstance(value, dict) else value
+                if not isinstance(box, (list, tuple)) or len(box) != 4:
+                    continue
+                x, y, width, height = map(float, box)
+                if max(abs(x), abs(y), abs(width), abs(height)) <= 1:
+                    x, width, y, height = x * 1280, width * 1280, y * 720, height * 720
+                imported[key] = tuple(round(item) for item in (x, y, width, height))
+            state = self.composer_states.get(code, self._composer_default_state(code))
+            state["positions"].update(imported)
+            self.composer_states[code] = state
+            self.composer_positions[code] = dict(state["positions"])
+        self.build_composer_backgrounds()
+
+    def refresh_composer_project(self):
+        if not self.src.get():
+            return self.open_composer_project()
+        self.build_composer_backgrounds()
+
+    def build_composer_backgrounds(self):
+        if not self.src.get():
+            return messagebox.showwarning("Live Composer", "먼저 프로젝트 폴더 또는 원본 이미지를 여세요.")
+        try:
+            self.composer_channel.set(self.channel.get())
+            self.composer_bases.clear()
+            self.composer_subjects.clear()
+            self.composer_safe_zones.clear()
+            generated = create_candidate_images(self.src.get(), self.composer_channel.get(), TEMPLATE_MODE,
+                self.focus_mode.get(), self.protagonist, self.counterpart, self.story_type.get(),
+                self.template_episode.get(), "", "", self.composer_style.get(), self.auto_two_line.get(),
+                self.emphasize_keyword.get(), self.keyword.get(), self.composer_title_size.get(),
+                render_text=False)
+            for candidate in generated:
+                self.composer_bases[candidate.code] = candidate.image.copy()
+                self.composer_subjects[candidate.code] = tuple(candidate.typography.get("subject_boxes", ()))
+                self.composer_safe_zones[candidate.code] = tuple(candidate.typography.get("safe_zones", ()))
+                if candidate.code not in self.composer_states:
+                    self.composer_states[candidate.code] = self._composer_default_state(candidate.code)
+                state = self.composer_states[candidate.code]
+                if not state["positions"]:
+                    self.composer_positions[candidate.code] = dict(state["positions"])
+            self.candidates = generated
+            self._composer_candidate_changed()
+            self.composer_info.set("A/B/C 무텍스트 배경 생성 완료 · 선택 후보의 글자 레이어를 편집하세요")
+        except Exception as exc:
+            logging.exception("Composer background creation failed")
+            messagebox.showerror("Live Composer", str(exc))
+
+    def _composer_placeholder(self, feature):
+        messagebox.showinfo(feature, f"{feature} 연결 인터페이스를 준비했습니다. 실제 배경 생성/편집 서비스 호출은 후속 버전에서 연결합니다.")
+
+    def apply_composer_result(self):
+        code = self.composer_code.get()
+        if self.composer_result is None:
+            return messagebox.showwarning("Live Composer", "먼저 A/B/C 배경을 생성하세요.")
+        for candidate in self.candidates:
+            if candidate.code == code:
+                candidate.image = self.composer_result.copy()
+                candidate.typography = self.composer_metadata
+                break
+        if self.candidates and hasattr(self, "preview_labels"):
+            index = next((i for i, item in enumerate(self.candidates) if item.code == code), None)
+            if index is not None:
+                photo = ImageTk.PhotoImage(Image.fromarray(self.composer_result[:, :, ::-1]).resize((280, 158), Image.Resampling.LANCZOS))
+                self.preview_refs[index] = photo
+                self.preview_labels[index].configure(image=photo, text="")
+        self.status.set(f"{code} Live Composer 편집이 저장 후보에 반영됐습니다.")
 
     def pick_reference(self):
         path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png *.webp")], title="비교용 완성 썸네일 선택")

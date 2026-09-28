@@ -21,24 +21,24 @@ class ThumbnailLayout:
 
 _LAYOUT_OPTIONS = {
     "A_PERSON": {
-        "Tokyo Chill": (((42, 438, 790, 220), "left"), ((448, 490, 790, 170), "right")),
-        "OLD POP LOUNGE": (((52, 420, 840, 235), "left"), ((388, 450, 840, 190), "right")),
+        "Tokyo Chill": (((42, 380, 790, 280), "left"), ((448, 430, 790, 250), "right")),
+        "OLD POP LOUNGE": (((52, 370, 840, 290), "left"), ((388, 430, 840, 250), "right")),
     },
     "B_EMOTION": {
-        "Tokyo Chill": (((206, 386, 868, 235), "center"), ((220, 290, 850, 240), "center")),
-        "OLD POP LOUNGE": (((148, 394, 984, 235), "center"), ((150, 288, 980, 250), "center")),
+        "Tokyo Chill": (((206, 370, 868, 290), "center"), ((220, 290, 850, 260), "center")),
+        "OLD POP LOUNGE": (((148, 370, 984, 290), "center"), ((150, 288, 980, 270), "center")),
     },
     "B_MEMORY": {
-        "Tokyo Chill": (((206, 386, 868, 235), "center"), ((220, 290, 850, 240), "center")),
-        "OLD POP LOUNGE": (((148, 394, 984, 235), "center"), ((150, 288, 980, 250), "center")),
+        "Tokyo Chill": (((206, 370, 868, 290), "center"), ((220, 290, 850, 260), "center")),
+        "OLD POP LOUNGE": (((148, 370, 984, 290), "center"), ((150, 288, 980, 270), "center")),
     },
     "C_STORY": {
-        "Tokyo Chill": (((52, 94, 720, 260), "left"), ((500, 94, 725, 260), "right")),
-        "OLD POP LOUNGE": (((58, 92, 840, 280), "left"), ((380, 92, 840, 280), "right")),
+        "Tokyo Chill": (((52, 94, 720, 290), "left"), ((500, 94, 725, 290), "right")),
+        "OLD POP LOUNGE": (((58, 92, 840, 290), "left"), ((380, 92, 840, 290), "right")),
     },
     "C_SCENERY": {
-        "Tokyo Chill": (((52, 94, 720, 260), "left"), ((500, 94, 725, 260), "right")),
-        "OLD POP LOUNGE": (((58, 92, 840, 280), "left"), ((380, 92, 840, 280), "right")),
+        "Tokyo Chill": (((52, 94, 720, 290), "left"), ((500, 94, 725, 290), "right")),
+        "OLD POP LOUNGE": (((58, 92, 840, 290), "left"), ((380, 92, 840, 290), "right")),
     },
 }
 
