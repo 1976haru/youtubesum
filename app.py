@@ -11,7 +11,10 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 from motion_engine import PRESETS, render
-from thumbnail_engine import APP_VERSION, create_candidate_images, generate_candidates, record_test, save_candidates, summarize
+from thumbnail_engine import (APP_VERSION, COMPLETED_MODE, RAW_MODE, TEMPLATE_MODE,
+                              candidate_similarities, candidates_too_similar,
+                              create_candidate_images, generate_candidates, record_test,
+                              save_candidates, summarize)
 
 
 def app_home():
@@ -33,10 +36,15 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"YouTube Dynamic Thumbnail Studio v{APP_VERSION}")
-        self.geometry("1180x760"); self.minsize(1040, 700)
+        self.geometry("1240x880"); self.minsize(1120, 800)
         self.src = tk.StringVar(); self.channel = tk.StringVar(value="Tokyo Chill")
-        self.source_mode = tk.StringVar(value="완성 썸네일(글자 보호)")
+        self.source_mode = tk.StringVar(value=TEMPLATE_MODE)
         self.focus_mode = tk.StringVar(value="자동")
+        self.story_type = tk.StringVar(value="자동")
+        self.template_episode = tk.StringVar(value="EP.001")
+        self.template_title = tk.StringVar(value="思い出の夜")
+        self.template_subtitle = tk.StringVar(value="A quiet story in the city")
+        self.reference_src = tk.StringVar()
         self.preset = tk.StringVar(value="Tokyo Chill - Rain"); self.duration = tk.IntVar(value=8)
         self.intensity = tk.DoubleVar(value=1.0); self.status = tk.StringVar(value="이미지를 선택하세요.")
         self.episode = tk.StringVar(value="EP001"); self.a = tk.StringVar(); self.b = tk.StringVar(); self.c = tk.StringVar()
@@ -53,6 +61,8 @@ class App(tk.Tk):
         self.src.trace_add("write", self._source_changed)
         self.source_mode.trace_add("write", lambda *_: self._update_mode_guard())
         self.focus_mode.trace_add("write", lambda *_: self._update_focus_state())
+        for variable in (self.src, self.source_mode, self.focus_mode, self.channel, self.story_type, self.template_episode, self.template_title, self.template_subtitle):
+            variable.trace_add("write", self._invalidate_candidates)
         self._update_mode_guard()
 
     def report_callback_exception(self, exc, value, tb):
@@ -96,11 +106,28 @@ class App(tk.Tk):
             self.protagonist = self.counterpart = self.focus_source = None
             self._update_focus_state()
 
+    def _invalidate_candidates(self, *_):
+        self.candidates = []
+        if hasattr(self, "preview_labels"):
+            self.preview_refs.clear()
+            for image_label, note_label in zip(self.preview_labels, self.note_labels):
+                image_label.configure(image="", text="미리보기 대기")
+                note_label.configure(text="")
+        if hasattr(self, "save_all_button"):
+            self.save_all_button.state(["disabled"])
+        if hasattr(self, "diversity_state"):
+            self.diversity_state.set("입력 변경됨 · 새 A/B/C 미리보기를 생성하세요")
+
     def _update_mode_guard(self):
         if not hasattr(self, "mode_guard"):
             return
-        completed = self.source_mode.get() == "완성 썸네일(글자 보호)"
-        self.mode_guard.set("글자/로고 보호 ON · 크롭 금지" if completed else "원본 이미지 모드 · 안전 크롭 허용")
+        mode = self.source_mode.get()
+        if mode == COMPLETED_MODE:
+            self.mode_guard.set("완성 썸네일 보호 · 크롭 금지 · 강한 A/B/C 차이는 제한됩니다")
+        elif mode == TEMPLATE_MODE:
+            self.mode_guard.set("권장 모드 · 텍스트 없는 원본을 재구도하고 입력한 글자를 새 레이어로 렌더링합니다")
+        else:
+            self.mode_guard.set("원본 이미지 모드 · 기본 구도 변경")
 
     def _update_focus_state(self):
         main = "수동 지정" if self.protagonist is not None else self.focus_mode.get()
@@ -161,7 +188,7 @@ class App(tk.Tk):
                 return
             if role == "protagonist": self.protagonist = selection["point"]
             else: self.counterpart = selection["point"]
-            self.focus_source = source; self._update_focus_state(); dialog.destroy()
+            self.focus_source = source; self._update_focus_state(); self._invalidate_candidates(); dialog.destroy()
 
     def _tab_candidates(self, notebook):
         tab = ttk.Frame(notebook); notebook.add(tab, text="① 3후보 미리보기"); self.source_row(tab)
@@ -169,9 +196,16 @@ class App(tk.Tk):
         ttk.Label(row, text="채널", width=8).pack(side="left")
         ttk.Combobox(row, textvariable=self.channel, values=["Tokyo Chill", "OLD POP LOUNGE"], state="readonly", width=18).pack(side="left")
         ttk.Label(row, text="입력 유형", width=9).pack(side="left", padx=(12, 0))
-        ttk.Combobox(row, textvariable=self.source_mode, values=["완성 썸네일(글자 보호)", "텍스트 없는 원본 이미지"], state="readonly", width=23).pack(side="left")
+        ttk.Combobox(row, textvariable=self.source_mode, values=[COMPLETED_MODE, TEMPLATE_MODE, RAW_MODE], state="readonly", width=34).pack(side="left")
         ttk.Label(row, text="주인공", width=7).pack(side="left", padx=(12, 0))
         ttk.Combobox(row, textvariable=self.focus_mode, values=["자동", "왼쪽 인물", "오른쪽 인물", "두 사람"], state="readonly", width=12).pack(side="left")
+        ttk.Label(row, text="이야기", width=7).pack(side="left", padx=(8, 0))
+        ttk.Combobox(row, textvariable=self.story_type, values=["자동", "남자 이야기", "여자 이야기", "두 사람 이야기"], state="readonly", width=13).pack(side="left")
+        text_row = ttk.Frame(tab); text_row.pack(fill="x", padx=16, pady=(2, 4))
+        for label, variable, width in (("EP", self.template_episode, 10), ("메인 제목", self.template_title, 32), ("영문/부제", self.template_subtitle, 34)):
+            ttk.Label(text_row, text=label).pack(side="left", padx=(0, 4))
+            ttk.Entry(text_row, textvariable=variable, width=width).pack(side="left", padx=(0, 10))
+        ttk.Button(text_row, text="참고 완성 썸네일", command=self.pick_reference).pack(side="left")
         actions = ttk.Frame(tab); actions.pack(fill="x", padx=16, pady=(2, 4))
         ttk.Button(actions, text="주인공 직접 지정", command=lambda: self.select_point("protagonist")).pack(side="left", padx=(0, 4))
         ttk.Button(actions, text="상대 인물 지정", command=lambda: self.select_point("counterpart")).pack(side="left", padx=4)
@@ -183,6 +217,9 @@ class App(tk.Tk):
         self.guard_label = ttk.Label(tab, textvariable=self.mode_guard, foreground="#a03020", font=("Segoe UI", 10, "bold"))
         self.guard_label.pack(anchor="w", padx=18, pady=(0, 2))
         ttk.Label(tab, textvariable=self.focus_state, foreground="#333").pack(anchor="w", padx=18, pady=(0, 2))
+        self.diversity_state = tk.StringVar(value="A/B/C 차이 점수: 미리보기 후 표시")
+        ttk.Label(tab, textvariable=self.diversity_state, foreground="#174c8c", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=18, pady=(0, 2))
+        ttk.Label(tab, text="완성 썸네일은 한 장으로 합쳐진 이미지라 글자/로고를 보존하면 구도 차이가 제한됩니다. 강한 후보 비교에는 ‘원본 이미지 + 템플릿’을 권장합니다.", wraplength=1160, foreground="#704020").pack(anchor="w", padx=18, pady=(0, 3))
         cards = ttk.Frame(tab); cards.pack(fill="both", expand=True, padx=10, pady=6)
         self.preview_labels, self.note_labels = [], []
         for index, title in enumerate(("A · PERSON", "B · EMOTION / MEMORY", "C · STORY / SCENERY")):
@@ -192,16 +229,43 @@ class App(tk.Tk):
             ttk.Button(card, text="이 후보만 저장", command=lambda i=index: self.save_one(i)).pack(pady=(2, 8))
             self.preview_labels.append(image_label); self.note_labels.append(note); cards.columnconfigure(index, weight=1)
         cards.rowconfigure(0, weight=1)
-        ttk.Button(tab, text="3개 모두 저장", command=self.save_all).pack(pady=8, ipadx=30, ipady=5)
+        self.save_all_button = ttk.Button(tab, text="3개 모두 저장", command=self.save_all, state="disabled")
+        self.save_all_button.pack(pady=8, ipadx=30, ipady=5)
+
+    def pick_reference(self):
+        path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png *.webp")], title="비교용 완성 썸네일 선택")
+        if path:
+            self.reference_src.set(path)
+            self._show_reference()
+
+    def _show_reference(self):
+        if not self.reference_src.get():
+            return messagebox.showinfo("참고 이미지", "선택된 참고 썸네일이 없습니다.")
+        try:
+            im = Image.open(self.reference_src.get()).convert("RGB")
+            im.thumbnail((720, 405), Image.Resampling.LANCZOS)
+            win = tk.Toplevel(self); win.title("참고용 완성 썸네일 · 후보 생성에는 사용하지 않음")
+            ttk.Label(win, text="참고 전용이며 크롭·합성 입력으로 사용하지 않습니다.").pack(padx=8, pady=6)
+            photo = ImageTk.PhotoImage(im); label = ttk.Label(win, image=photo); label.image = photo; label.pack(padx=8, pady=8)
+        except Exception as exc:
+            messagebox.showerror("참고 이미지 오류", str(exc))
 
     def make_previews(self):
         if not self.src.get(): return messagebox.showwarning("확인", "이미지를 선택하세요.")
         def work():
             self.status.set("얼굴/구도를 분석하고 있습니다..."); self.update_idletasks()
-            self.candidates = create_candidate_images(self.src.get(), self.channel.get(), self.source_mode.get(), self.focus_mode.get(), self.protagonist, self.counterpart); self.preview_refs.clear()
+            self.candidates = create_candidate_images(self.src.get(), self.channel.get(), self.source_mode.get(), self.focus_mode.get(), self.protagonist, self.counterpart,
+                                                      self.story_type.get(), self.template_episode.get(), self.template_title.get(), self.template_subtitle.get()); self.preview_refs.clear()
             for candidate, image_label, note_label in zip(self.candidates, self.preview_labels, self.note_labels):
                 photo = ImageTk.PhotoImage(Image.fromarray(candidate.image[:, :, ::-1]).resize((340, 191), Image.Resampling.LANCZOS))
                 self.preview_refs.append(photo); image_label.configure(image=photo, text=""); note_label.configure(text=candidate.composition)
+            scores = candidate_similarities(self.candidates)
+            score_text = " · ".join(f"{pair} 차이 {100 * (1 - score):.1f}%" for pair, score in scores.items())
+            if candidates_too_similar(self.candidates):
+                self.diversity_state.set("후보 차이가 부족합니다. 원본 이미지 + 템플릿 모드를 권장합니다. · " + score_text)
+            else:
+                self.diversity_state.set("후보 차이 확인 · " + score_text)
+            self.save_all_button.state(["!disabled"])
             self.status.set("미리보기 완료 · 원본은 변경되지 않았습니다.")
         return self._handle(work)
 
@@ -220,6 +284,10 @@ class App(tk.Tk):
 
     def save_all(self):
         if not self.candidates: return messagebox.showwarning("확인", "먼저 A/B/C 미리보기를 생성하세요.")
+        if candidates_too_similar(self.candidates):
+            self.diversity_state.set("A/B/C 차이 부족 · 경고 확인 후 저장 가능")
+            if not messagebox.askyesno("A/B/C 차이 부족", "후보 차이가 작습니다. 원본 이미지 + 템플릿 모드를 권장합니다. 그래도 저장할까요?"):
+                return
         out = self._choose_output()
         if not out: return
         def work():

@@ -11,7 +11,9 @@ import cv2
 import numpy as np
 
 from motion_engine import _ffmpeg_executable, render
-from thumbnail_engine import _crop_resize, _map_point_to_full_frame, create_candidate_images, generate_candidates
+from thumbnail_engine import (Candidate, TEMPLATE_MODE, _crop_resize, _map_point_to_full_frame,
+                              _font, candidate_similarities, candidates_too_similar,
+                              create_candidate_images, generate_candidates)
 
 
 def write_unicode(path, image):
@@ -41,7 +43,7 @@ class CandidateValidation(unittest.TestCase):
             differences = [float(np.mean(cv2.absdiff(decoded[i], decoded[j]))) for i, j in ((0, 1), (0, 2), (1, 2))]
             self.assertTrue(all(value > 2.0 for value in differences), differences)
             manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-            self.assertEqual("0.3.1", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
+            self.assertEqual("0.3.2", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
 
     def test_ascii_paths(self):
         self.run_case("ascii input", "ascii output")
@@ -152,8 +154,10 @@ class CandidateValidation(unittest.TestCase):
             except tk.TclError as exc:
                 self.skipTest(f"Tk desktop is unavailable: {exc}")
             try:
+                self.assertEqual(TEMPLATE_MODE, app.source_mode.get())
+                self.assertTrue(app.save_all_button.instate(["disabled"]))
                 app.src.set(str(first)); app.update()
-                self.assertEqual("글자/로고 보호 ON · 크롭 금지", app.mode_guard.get())
+                self.assertIn("권장 모드", app.mode_guard.get())
                 app.select_point("protagonist"); app.update()
                 app.selection_canvas.event_generate("<Button-1>", x=250, y=220); app.update()
                 self.assertGreaterEqual(len(app.selection_canvas.find_all()), 3)
@@ -163,10 +167,16 @@ class CandidateValidation(unittest.TestCase):
                 app.selection_canvas.event_generate("<Button-1>", x=700, y=300); app.update()
                 app.selection_apply_button.invoke(); app.update()
                 self.assertIsNotNone(app.counterpart)
+                app.make_previews(); app.update()
+                self.assertEqual(3, len(app.candidates))
+                self.assertTrue(app.save_all_button.instate(["!disabled"]))
+                app.focus_mode.set("왼쪽 인물"); app.update()
+                self.assertTrue(app.save_all_button.instate(["disabled"]))
                 app.src.set(str(second)); app.update()
                 self.assertIsNone(app.protagonist); self.assertIsNone(app.counterpart)
+                self.assertTrue(app.save_all_button.instate(["disabled"]))
                 app.source_mode.set("텍스트 없는 원본 이미지")
-                self.assertEqual("원본 이미지 모드 · 안전 크롭 허용", app.mode_guard.get())
+                self.assertEqual("원본 이미지 모드 · 기본 구도 변경", app.mode_guard.get())
             finally:
                 app.destroy()
 
@@ -185,6 +195,62 @@ class CandidateValidation(unittest.TestCase):
             with patch("thumbnail_engine._detect_faces", return_value=[(30, 240, 150, 190), (1210, 250, 150, 190)]):
                 wide_group = create_candidate_images(source, "Tokyo Chill", "텍스트 없는 원본 이미지")
             self.assertIn("전체 원본 안전 구도", wide_group[0].composition)
+
+    def test_template_mode_outputs_three_distinct_safe_crops_and_unicode_text(self):
+        self.assertTrue(Path(_font(40, "hangul").path).is_file())
+        self.assertTrue(Path(_font(40, "japanese").path).is_file())
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "raw-no-text.png"
+            y, x = np.indices((900, 1600))
+            image = np.dstack(((x // 5) % 256, (y // 4) % 256, ((x + y) // 7) % 256)).astype(np.uint8)
+            write_unicode(source, image)
+            # Two people: the manually selected man is at left; the counterpart is right.
+            people = [(300, 230, 130, 170), (1060, 220, 145, 185)]
+            with patch("thumbnail_engine._detect_faces", return_value=people):
+                candidates = create_candidate_images(source, "Tokyo Chill", TEMPLATE_MODE,
+                    protagonist=(0.23, 0.35), counterpart=(0.71, 0.34), story_type="남자 이야기",
+                    episode="EP.012", title="東京の思い出 한글", subtitle="A story across the night")
+            self.assertEqual(["A_PERSON", "B_EMOTION", "C_STORY"], [c.code for c in candidates])
+            self.assertTrue(all(c.image.shape == (720, 1280, 3) for c in candidates))
+            a, b, c = [candidate.crop_box for candidate in candidates]
+            self.assertIsNotNone(a); self.assertIsNotNone(b); self.assertIsNotNone(c)
+            self.assertLess(a[0], 500); self.assertLess(a[2] - a[0], b[2] - b[0]); self.assertEqual((0, 0, 1600, 900), c)
+            self.assertLess((a[0] + a[2]) / 2 / 1600, 0.40)  # selected male, not the woman on the right
+            self.assertTrue(all(box[0] <= face[0] and box[1] <= face[1] and box[2] >= face[0] + face[2] and box[3] >= face[1] + face[3]
+                                for box in (a, b) for face in people if face[0] < box[2] and face[0] + face[2] > box[0]
+                                and face[1] < box[3] and face[1] + face[3] > box[1]))
+            # Framing + alternate independent text panels remain obvious at 340x191.
+            small = [cv2.resize(cand.image, (340, 191), interpolation=cv2.INTER_AREA) for cand in candidates]
+            for left, right in ((0, 1), (0, 2), (1, 2)):
+                self.assertGreater(float(cv2.absdiff(small[left], small[right]).mean()), 7.0)
+            self.assertFalse(candidates_too_similar(candidates))
+            self.assertGreater(float(cv2.absdiff(candidates[2].image, _full_frame_for_test(image)).mean()), 1.0)
+
+    def test_old_pop_template_uses_calm_scene_and_outputs_three(self):
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "calm-source.png"
+            image = np.full((900, 1600, 3), (108, 94, 74), dtype=np.uint8)
+            image[:, :650] = (90, 110, 130); image[:, 650:] = (115, 92, 68)
+            write_unicode(source, image)
+            with patch("thumbnail_engine._detect_faces", return_value=[(360, 250, 150, 190)]):
+                candidates = create_candidate_images(source, "OLD POP LOUNGE", TEMPLATE_MODE,
+                    protagonist=(0.27, 0.40), story_type="남자 이야기", episode="EP.008",
+                    title="懐かしい歌", subtitle="Songs from our youth")
+            self.assertEqual(["A_PERSON", "B_MEMORY", "C_SCENERY"], [c.code for c in candidates])
+            self.assertEqual((0, 0, 1600, 900), candidates[2].crop_box)
+            self.assertLess(candidates[0].crop_box[2] - candidates[0].crop_box[0], 900)
+            self.assertTrue(all(c.image.shape == (720, 1280, 3) for c in candidates))
+
+    def test_diversity_gate_warns_for_near_identical_candidates(self):
+        same = np.full((720, 1280, 3), 90, dtype=np.uint8)
+        candidates = [Candidate(code, code, same.copy(), "same") for code in ("A_PERSON", "B_EMOTION", "C_STORY")]
+        self.assertTrue(candidates_too_similar(candidates))
+        self.assertEqual({"A-B": 1.0, "A-C": 1.0, "B-C": 1.0}, candidate_similarities(candidates))
+
+
+def _full_frame_for_test(image):
+    # Input fixture is exact 16:9, so expected C scene pixels are just resized.
+    return cv2.resize(image, (1280, 720), interpolation=cv2.INTER_LANCZOS4)
 
 
 if __name__ == "__main__":

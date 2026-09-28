@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import csv
+from functools import lru_cache
 import json
+import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 OUTPUT_SIZE = (1280, 720)
+COMPLETED_MODE = "완성 썸네일(글자 보호)"
+RAW_MODE = "텍스트 없는 원본 이미지"
+TEMPLATE_MODE = "원본 이미지 + 템플릿 (권장)"
+SIMILARITY_WARNING_THRESHOLD = 0.94
 STRATEGIES = {
     "Tokyo Chill": [("A_PERSON", "A · PERSON / 인물 중심"), ("B_EMOTION", "B · EMOTION / 감정·여백"), ("C_STORY", "C · STORY / 공간·이야기")],
     "OLD POP LOUNGE": [("A_PERSON", "A · PERSON / 인물 중심"), ("B_MEMORY", "B · MEMORY / 추억·여백"), ("C_SCENERY", "C · SCENERY / 풍경·계절")],
@@ -24,6 +32,7 @@ class Candidate:
     image: np.ndarray
     composition: str
     file: str | None = None
+    crop_box: tuple[int, int, int, int] | None = None
 
 
 def _read(path):
@@ -74,6 +83,148 @@ def _detect_faces(image):
 def _crop_resize(image, crop):
     x0, y0, x1, y1 = crop
     return cv2.resize(image[y0:y1, x0:x1], OUTPUT_SIZE, interpolation=cv2.INTER_LANCZOS4)
+
+
+def _template_crop(image, focus_boxes, padding=0.8, fallback_center=(0.5, 0.46), zoom=1.0):
+    """Choose a face-safe 16:9 crop around the supplied people/context."""
+    ih, iw = image.shape[:2]
+    if focus_boxes:
+        x0 = min(b[0] for b in focus_boxes); y0 = min(b[1] for b in focus_boxes)
+        x1 = max(b[0] + b[2] for b in focus_boxes); y1 = max(b[1] + b[3] for b in focus_boxes)
+        fw, fh = x1 - x0, y1 - y0
+        wanted_w = max(fw * (1 + padding * 2), fh * (1 + padding * 2) * (16 / 9)) / max(1.0, zoom)
+        wanted_h = wanted_w * 9 / 16
+        if wanted_h < fh * (1 + padding * 2) / max(1.0, zoom):
+            wanted_h = fh * (1 + padding * 2) / max(1.0, zoom); wanted_w = wanted_h * 16 / 9
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    else:
+        wanted_w = iw / max(1.0, zoom); wanted_h = wanted_w * 9 / 16
+        cx, cy = fallback_center[0] * iw, fallback_center[1] * ih
+    if wanted_w > iw or wanted_h > ih:
+        return (0, 0, iw, ih)
+    left = int(round(max(0, min(iw - wanted_w, cx - wanted_w / 2))))
+    top = int(round(max(0, min(ih - wanted_h, cy - wanted_h * 0.46))))
+    right, bottom = min(iw, int(round(left + wanted_w))), min(ih, int(round(top + wanted_h)))
+    # Never slice through a detected face: move the crop edge out when possible,
+    # otherwise use the full source (which letterboxes rather than cuts faces).
+    for fx, fy, fw, fh in focus_boxes:
+        if fx < left or fy < top or fx + fw > right or fy + fh > bottom:
+            return (0, 0, iw, ih)
+    return left, top, right, bottom
+
+
+@lru_cache(maxsize=128)
+def _font(size, script="default"):
+    """Use redistributable OS fonts; no proprietary font files are bundled."""
+    candidates = []
+    if sys.platform == "win32":
+        fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+        names = {"hangul": ("malgun.ttf", "malgunsl.ttf", "NanumGothic.ttf", "YuGothB.ttc", "arial.ttf"),
+                 "japanese": ("YuGothB.ttc", "meiryo.ttc", "msgothic.ttc", "malgun.ttf", "arial.ttf"),
+                 "default": ("YuGothB.ttc", "meiryo.ttc", "malgun.ttf", "arial.ttf")}[script]
+        candidates += [fonts / name for name in names]
+    candidates += [Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                   Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc")]
+    for path in candidates:
+        if path.is_file():
+            try:
+                return ImageFont.truetype(str(path), size=size, index=0)
+            except (OSError, TypeError):
+                continue
+    return ImageFont.load_default()
+
+
+def _script_of(char):
+    code = ord(char)
+    if 0x1100 <= code <= 0x11FF or 0x3130 <= code <= 0x318F or 0xAC00 <= code <= 0xD7AF:
+        return "hangul"
+    if 0x3040 <= code <= 0x30FF or 0x3400 <= code <= 0x9FFF or 0xF900 <= code <= 0xFAFF:
+        return "japanese"
+    return "default"
+
+
+def _unicode_runs(text, size):
+    runs = []
+    for char in text:
+        script = _script_of(char)
+        font = _font(size, script)
+        # Merge only adjacent characters using the same OS font file/script.
+        if runs and runs[-1][0] == script:
+            runs[-1] = (script, runs[-1][1] + char, font)
+        else:
+            runs.append((script, char, font))
+    return runs
+
+
+def _unicode_width(text, size):
+    return sum(float(font.getlength(run)) for _, run, font in _unicode_runs(text, size))
+
+
+def _draw_unicode(draw, xy, text, size, fill, stroke_width=0, stroke_fill=None):
+    x, y = xy
+    for _, run, font in _unicode_runs(text, size):
+        draw.text((x, y), run, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
+        x += float(font.getlength(run))
+
+
+def _fit_unicode_size(text, max_width, initial_size, minimum_size=22):
+    size = initial_size
+    while size > minimum_size and _unicode_width(text, size) > max_width:
+        size -= 2
+    return size
+
+
+def _render_template(image, channel, code, story_type, episode, title, subtitle):
+    """Render editable Unicode template text independently over raw imagery."""
+    canvas = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).convert("RGBA")
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    old_pop = channel == "OLD POP LOUNGE"
+    ink = (255, 246, 225, 255) if old_pop else (255, 255, 255, 255)
+    accent = (236, 207, 153, 255) if old_pop else (255, 221, 80, 255)
+    # Solid translucent safe-zone plates keep all copy readable at 340 px.
+    if code == "A_PERSON":
+        panel = (40, 480, 900, 692); title_xy, episode_xy, sub_xy = (66, 545), (1050, 58), (68, 656)
+        label_xy = (790, 62)
+    elif code in ("B_EMOTION", "B_MEMORY"):
+        panel = (330, 438, 1238, 690); title_xy, episode_xy, sub_xy = (370, 505), (1050, 58), (372, 641)
+        label_xy = (810, 62)
+    else:
+        panel = (38, 52, 702, 292); title_xy, episode_xy, sub_xy = (66, 126), (1050, 58), (68, 244)
+        label_xy = (68, 62)
+    draw.rounded_rectangle(panel, radius=18 if old_pop else 28, fill=(10, 12, 18, 174 if not old_pop else 188))
+    story_labels = {"남자 이야기": "MAN'S STORY", "여자 이야기": "WOMAN'S STORY",
+                    "두 사람 이야기": "TWO STORIES", "자동": "STORY"}
+    story = story_labels.get(story_type, story_type or "STORY")
+    brand = "OLD POP LOUNGE" if old_pop else "TOKYO CHILL"
+    fs = 24 if old_pop else 22
+    draw.text((40, 20), brand, font=_font(fs), fill=ink, stroke_width=1, stroke_fill=(0, 0, 0, 220))
+    draw.text(label_xy, story, font=_font(fs), fill=accent, stroke_width=1, stroke_fill=(0, 0, 0, 220))
+    draw.text(episode_xy, episode or "EP.001", font=_font(26 if old_pop else 23), fill=ink,
+              stroke_width=1, stroke_fill=(0, 0, 0, 220))
+    title = title.strip() or ("思い出の夜" if not old_pop else "懐かしのメロディー")
+    title_size = _fit_unicode_size(title, 790 if code != "C_STORY" and code != "C_SCENERY" else 570,
+                                   64 if not old_pop else 58, 36)
+    _draw_unicode(draw, title_xy, title, title_size, ink, stroke_width=2, stroke_fill=(0, 0, 0, 230))
+    subtitle = subtitle.strip() or ("A quiet story in the city" if not old_pop else "Songs that stay with us")
+    sub_size = _fit_unicode_size(subtitle, 800, 27 if not old_pop else 30, 22)
+    _draw_unicode(draw, sub_xy, subtitle, sub_size, accent, stroke_width=1, stroke_fill=(0, 0, 0, 230))
+    return cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+
+def candidate_similarities(candidates):
+    """Return pairwise downsampled RGB similarity (1.0 means identical)."""
+    result = {}
+    for i, j in ((0, 1), (0, 2), (1, 2)):
+        a = cv2.resize(candidates[i].image, (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+        b = cv2.resize(candidates[j].image, (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+        similarity = 1.0 - float(np.mean(np.abs(a - b))) / 255.0
+        result[f"{candidates[i].code[0]}-{candidates[j].code[0]}"] = max(0.0, min(1.0, similarity))
+    return result
+
+
+def candidates_too_similar(candidates, threshold=SIMILARITY_WARNING_THRESHOLD):
+    scores = candidate_similarities(candidates)
+    return bool(scores) and all(score >= threshold for score in scores.values())
 
 
 def _safe_crop(image, focus, padding, target_ratio=16 / 9):
@@ -191,14 +342,15 @@ def _emphasize_subject(base, centers, strength=0.26, warm=False, radius_x=0.22, 
     return np.clip(base.astype(np.float32) * (1 - mask * strength) + enhanced.astype(np.float32) * (mask * strength), 0, 255).astype(np.uint8)
 
 
-def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동", protagonist=None, counterpart=None):
+def create_candidate_images(src, channel, source_mode=COMPLETED_MODE, focus_mode="자동", protagonist=None, counterpart=None,
+                           story_type="자동", episode="EP.001", title="", subtitle=""):
     image = _read(src)
     faces = _detect_faces(image)
     specs = STRATEGIES.get(channel)
     if specs is None:
         raise ValueError(f"지원하지 않는 채널입니다: {channel}")
 
-    if source_mode == "완성 썸네일(글자 보호)":
+    if source_mode == COMPLETED_MODE:
         base = _full_frame(image)
         # Face boxes are mapped approximately after full-frame resize only; manual left/right selection
         # remains available when side-profile detection misses the intended protagonist.
@@ -249,7 +401,7 @@ def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 �
     c_image, c_note = _fit_on_canvas(image, "blur"), "전체 원본 보존 · 배경/스토리 구도"
     images = [_grade(a_image, "person"), _grade(b_image, "emotion"), _grade(c_image, "story")]
     # Raw images honor a manual protagonist point when face detection missed a profile.
-    if protagonist is not None and source_mode != "완성 썸네일(글자 보호)":
+    if protagonist is not None and source_mode == RAW_MODE:
         full = _full_frame(image)
         mapped_protagonist = _map_point_to_full_frame(protagonist, image.shape)
         mapped_counterpart = _map_point_to_full_frame(counterpart, image.shape) if counterpart is not None else None
@@ -261,7 +413,56 @@ def create_candidate_images(src, channel, source_mode="완성 썸네일(글자 �
         images = [a_image, b_image, c_image]
         a_note = "수동 지정 인물 강조 · 원본 안전 구도"
         b_note = "지정 인물 관계/감정 강조 · 원본 안전 구도"
-        return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
+        return [Candidate(code, label, output, note, crop_box=(0, 0, image.shape[1], image.shape[0]))
+                for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
+
+    if source_mode == TEMPLATE_MODE:
+        # This is the primary workflow: only the raw, text-free source is ever cropped.
+        # A reference finished thumbnail is a UI-only comparison and is never an input layer.
+        ih, iw = image.shape[:2]
+        detected = list(faces)
+        def point_box(point):
+            if point is None:
+                return None
+            px, py = int(point[0] * iw), int(point[1] * ih)
+            nearest = min(detected, key=lambda b: (px - (b[0] + b[2] / 2)) ** 2 + (py - (b[1] + b[3] / 2)) ** 2, default=None)
+            if nearest is not None:
+                return nearest
+            bw, bh = max(56, int(iw * 0.12)), max(72, int(ih * 0.24))
+            return max(0, px - bw // 2), max(0, py - bh // 2), min(bw, iw), min(bh, ih)
+        pbox, qbox = point_box(protagonist), point_box(counterpart)
+        if pbox is None and detected:
+            pbox = max(detected, key=lambda b: b[2] * b[3])
+        # For an explicitly selected protagonist, A frames him/her alone. Other
+        # detected faces are either fully outside or fully inside the frame; if a
+        # proposed cut would bisect another face, fall back to a safe wider crop.
+        a_crop = _template_crop(image, [pbox] if pbox else [], padding=1.0, fallback_center=(0.5, 0.46), zoom=1.45)
+        relation_boxes = [box for box in (pbox, qbox) if box]
+        if not relation_boxes:
+            relation_boxes = detected[:2]
+        b_crop = _template_crop(image, relation_boxes, padding=0.25, fallback_center=(0.5, 0.46), zoom=1.0)
+        c_crop = (0, 0, iw, ih)
+        def safely_contains_faces(crop):
+            x0, y0, x1, y1 = crop
+            for fx, fy, fw, fh in detected:
+                intersects = fx < x1 and fx + fw > x0 and fy < y1 and fy + fh > y0
+                fully_inside = fx >= x0 and fy >= y0 and fx + fw <= x1 and fy + fh <= y1
+                if intersects and not fully_inside:
+                    return (0, 0, iw, ih)
+            return crop
+        a_crop = safely_contains_faces(a_crop); b_crop = safely_contains_faces(b_crop)
+        crops = (a_crop, b_crop, c_crop)
+        notes = ("A PERSON · 주인공 중심 타이트 프레이밍 · 제목 하단 안전영역",
+                 "B EMOTION/MEMORY · 인물 관계·시선과 여백 · 대안 텍스트 배치",
+                 "C STORY/SCENERY · 원본 전체 환경 유지 · 스토리 텍스트 상단 배치")
+        generated = []
+        for (code, label), crop, note in zip(specs, crops, notes):
+            framed = _fit_on_canvas(image, "matte") if code.startswith("C_") or (crop == (0, 0, iw, ih) and abs(iw / ih - 16 / 9) > 0.01) else _crop_resize(image, crop)
+            if channel == "OLD POP LOUNGE":
+                framed = _grade(framed, "story" if code.startswith("C_") else "emotion")
+            rendered = _render_template(framed, channel, code, story_type, episode, title, subtitle)
+            generated.append(Candidate(code, label, rendered, note, crop_box=crop))
+        return generated
     return [Candidate(code, label, output, note) for (code, label), output, note in zip(specs, images, (a_note, b_note, c_note))]
 
 
@@ -278,17 +479,23 @@ def save_candidates(src, out_dir, candidates, selected_code=None):
         _write_image(path, candidate.image)
         candidate.file = str(path)
         saved.append((candidate.code, candidate.label, str(path)))
+    similarity = candidate_similarities(candidates)
     manifest = {
         "version": APP_VERSION, "source": str(src), "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "candidates": [{"code": c.code, "strategy": c.label, "composition": c.composition, "file": c.file} for c in candidates if c.file],
+        "candidate_similarity": similarity, "diversity_warning": candidates_too_similar(candidates),
+        "candidates": [{"code": c.code, "strategy": c.label, "composition": c.composition,
+                        "crop_box": list(c.crop_box) if c.crop_box else None, "file": c.file} for c in candidates if c.file],
         "note": "비생성형 로컬 분석만 사용하며 원본 파일은 수정하지 않는다.",
     }
     (out / f"{src.stem}_dynamic_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return saved
 
 
-def generate_candidates(src, out_dir, channel, source_mode="완성 썸네일(글자 보호)", focus_mode="자동", protagonist=None, counterpart=None):
-    return save_candidates(src, out_dir, create_candidate_images(src, channel, source_mode, focus_mode, protagonist, counterpart))
+def generate_candidates(src, out_dir, channel, source_mode=COMPLETED_MODE, focus_mode="자동", protagonist=None, counterpart=None,
+                        story_type="자동", episode="EP.001", title="", subtitle=""):
+    candidates = create_candidate_images(src, channel, source_mode, focus_mode, protagonist, counterpart,
+                                         story_type, episode, title, subtitle)
+    return save_candidates(src, out_dir, candidates)
 
 
 def record_test(db_path, episode, channel, a, b, c, winner, notes=""):
