@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, random, subprocess, shutil
+import math, random, subprocess, shutil, tempfile
 from pathlib import Path
 import cv2, numpy as np
 
@@ -75,21 +75,29 @@ def _read_unicode(path):
     return img
 
 def render(input_path, output_path, preset, duration=8, fps=30, width=1920,height=1080,intensity=1.0):
+    ff=shutil.which('ffmpeg')
+    if not ff:
+        raise RuntimeError('FFmpeg를 찾을 수 없습니다. ffmpeg.org에서 설치한 뒤 PATH에 추가하고 앱을 다시 실행하세요.')
     img=_read_unicode(input_path)
     base=_cover(img,width,height); p=PRESETS[preset].copy()
     for k in ('zoom','pan','rain','snow','bokeh','grain','warm'): p[k]*=intensity
-    temp=Path(output_path).with_suffix('.silent.mp4')
-    fourcc=cv2.VideoWriter_fourcc(*'mp4v'); out=cv2.VideoWriter(str(temp),fourcc,fps,(width,height))
-    total=max(1,int(duration*fps))
-    for i in range(total):
-        # smooth forward/back cycle so loop boundary is visually gentle
-        phase=i/(total-1) if total>1 else 0; loop_t=.5-.5*math.cos(2*math.pi*phase)
-        f=_camera(base,loop_t,p); f=_bokeh(f,31,p['bokeh'],phase); f=_rain(f,17,p['rain'],phase); f=_snow(f,23,p['snow'],phase); f=_finish(f,p,phase,i+99)
-        out.write(f)
-    out.release()
-    ff=shutil.which('ffmpeg')
-    if ff:
+    output=Path(output_path); output.parent.mkdir(parents=True,exist_ok=True)
+    # OpenCV VideoWriter is unreliable with non-ASCII Windows paths. Render to an
+    # ASCII temp file, then let subprocess/FFmpeg write the Unicode destination.
+    with tempfile.TemporaryDirectory(prefix='ydts_motion_') as temp_dir:
+        temp=Path(temp_dir)/'silent.mp4'
+        fourcc=cv2.VideoWriter_fourcc(*'mp4v'); out=cv2.VideoWriter(str(temp),fourcc,fps,(width,height))
+        if not out.isOpened(): raise RuntimeError('임시 영상 파일을 열 수 없습니다.')
+        total=max(1,int(duration*fps))
+        for i in range(total):
+            phase=i/(total-1) if total>1 else 0; loop_t=.5-.5*math.cos(2*math.pi*phase)
+            f=_camera(base,loop_t,p); f=_bokeh(f,31,p['bokeh'],phase); f=_rain(f,17,p['rain'],phase); f=_snow(f,23,p['snow'],phase); f=_finish(f,p,phase,i+99)
+            out.write(f)
+        out.release()
         cmd=[ff,'-y','-i',str(temp),'-c:v','libx264','-preset','medium','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(output_path)]
-        subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True); temp.unlink(missing_ok=True)
-    else: shutil.move(str(temp),str(output_path))
+        try: subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,check=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        except subprocess.CalledProcessError as exc:
+            detail=exc.stderr.decode(errors='replace')[-1200:] if exc.stderr else ''
+            raise RuntimeError(f'FFmpeg H.264 인코딩에 실패했습니다.\n{detail}') from exc
+    if not output.exists() or output.stat().st_size==0: raise IOError(f'영상 저장 검증 실패: {output}')
     return str(output_path)
