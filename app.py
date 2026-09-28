@@ -35,6 +35,8 @@ class App(tk.Tk):
         self.title(f"YouTube Dynamic Thumbnail Studio v{APP_VERSION}")
         self.geometry("1180x760"); self.minsize(1040, 700)
         self.src = tk.StringVar(); self.channel = tk.StringVar(value="Tokyo Chill")
+        self.source_mode = tk.StringVar(value="완성 썸네일(글자 보호)")
+        self.focus_mode = tk.StringVar(value="자동")
         self.preset = tk.StringVar(value="Tokyo Chill - Rain"); self.duration = tk.IntVar(value=8)
         self.intensity = tk.DoubleVar(value=1.0); self.status = tk.StringVar(value="이미지를 선택하세요.")
         self.episode = tk.StringVar(value="EP001"); self.a = tk.StringVar(); self.b = tk.StringVar(); self.c = tk.StringVar()
@@ -69,10 +71,15 @@ class App(tk.Tk):
     def _tab_candidates(self, notebook):
         tab = ttk.Frame(notebook); notebook.add(tab, text="① 3후보 미리보기"); self.source_row(tab)
         row = ttk.Frame(tab); row.pack(fill="x", padx=16, pady=4)
-        ttk.Label(row, text="채널", width=10).pack(side="left")
-        ttk.Combobox(row, textvariable=self.channel, values=["Tokyo Chill", "OLD POP LOUNGE"], state="readonly", width=24).pack(side="left")
-        ttk.Button(row, text="A/B/C 미리보기 생성", command=self.make_previews).pack(side="left", padx=12)
+        ttk.Label(row, text="채널", width=8).pack(side="left")
+        ttk.Combobox(row, textvariable=self.channel, values=["Tokyo Chill", "OLD POP LOUNGE"], state="readonly", width=18).pack(side="left")
+        ttk.Label(row, text="입력 유형", width=9).pack(side="left", padx=(12, 0))
+        ttk.Combobox(row, textvariable=self.source_mode, values=["완성 썸네일(글자 보호)", "텍스트 없는 원본 이미지"], state="readonly", width=23).pack(side="left")
+        ttk.Label(row, text="주인공", width=7).pack(side="left", padx=(12, 0))
+        ttk.Combobox(row, textvariable=self.focus_mode, values=["자동", "왼쪽 인물", "오른쪽 인물", "두 사람"], state="readonly", width=12).pack(side="left")
+        ttk.Button(row, text="A/B/C 미리보기 생성", command=self.make_previews).pack(side="left", padx=10)
         ttk.Button(row, text="결과 폴더 열기", command=self.open_output_folder).pack(side="right")
+        ttk.Label(tab, text="완성 썸네일 모드에서는 기존 글자·로고·EP 표기를 자르지 않습니다. 남자/여자 이야기는 화면에서 주인공이 있는 위치를 선택하세요.", foreground="#555").pack(anchor="w", padx=18, pady=(0, 2))
         cards = ttk.Frame(tab); cards.pack(fill="both", expand=True, padx=10, pady=6)
         self.preview_labels, self.note_labels = [], []
         for index, title in enumerate(("A · PERSON", "B · EMOTION / MEMORY", "C · STORY / SCENERY")):
@@ -88,7 +95,7 @@ class App(tk.Tk):
         if not self.src.get(): return messagebox.showwarning("확인", "이미지를 선택하세요.")
         def work():
             self.status.set("얼굴/구도를 분석하고 있습니다..."); self.update_idletasks()
-            self.candidates = create_candidate_images(self.src.get(), self.channel.get()); self.preview_refs.clear()
+            self.candidates = create_candidate_images(self.src.get(), self.channel.get(), self.source_mode.get(), self.focus_mode.get()); self.preview_refs.clear()
             for candidate, image_label, note_label in zip(self.candidates, self.preview_labels, self.note_labels):
                 photo = ImageTk.PhotoImage(Image.fromarray(candidate.image[:, :, ::-1]).resize((340, 191), Image.Resampling.LANCZOS))
                 self.preview_refs.append(photo); image_label.configure(image=photo, text=""); note_label.configure(text=candidate.composition)
@@ -161,7 +168,7 @@ class App(tk.Tk):
 def main():
     # Headless hook used only to validate the packaged engine on real Windows paths.
     if len(sys.argv) == 4 and sys.argv[1] == "--self-test":
-        generate_candidates(sys.argv[2], sys.argv[3], "Tokyo Chill")
+        generate_candidates(sys.argv[2], sys.argv[3], "Tokyo Chill", "완성 썸네일(글자 보호)", "자동")
         return
     app = App()
     if "--smoke-test" in sys.argv:
