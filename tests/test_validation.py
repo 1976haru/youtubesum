@@ -43,7 +43,7 @@ class CandidateValidation(unittest.TestCase):
             differences = [float(np.mean(cv2.absdiff(decoded[i], decoded[j]))) for i, j in ((0, 1), (0, 2), (1, 2))]
             self.assertTrue(all(value > 2.0 for value in differences), differences)
             manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-            self.assertEqual("0.4.0", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
+        self.assertEqual("0.5.1", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
 
     def test_ascii_paths(self):
         self.run_case("ascii input", "ascii output")
@@ -298,6 +298,52 @@ class CandidateValidation(unittest.TestCase):
                 self.assertEqual((77, 88, 500, 200), app.composer_positions["A_PERSON"]["main_title"])
                 self.assertEqual((384, 648, 640, 36), app.composer_positions["A_PERSON"]["subtitle"])
                 self.assertEqual(2, rebuild.call_count)
+            finally:
+                app.destroy()
+
+    def test_image_bridge_gui_action_passes_context_and_auto_refreshes(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from app import App
+        from image_bridge import LaunchResult
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            app = App()
+            try:
+                app.image_project = SimpleNamespace(folder=root)
+                app.composer_channel.set("Tokyo Chill")
+                app.composer_story.set("ROMANTIC NEON")
+                app.composer_title.set("雨の夜、君を思う")
+                app.composer_subtitle.set("A quiet city love story")
+                app.composer_episode.set("EP.014")
+                app.composer_style.set("Romantic Neon")
+                app.image_prompt.set("rainy Tokyo station at night")
+                app.load_image_project_folder = Mock(return_value=True)
+                expected = LaunchResult(True, "generated", action="generate", project_dir=root, return_code=0)
+
+                class InlineThread:
+                    def __init__(self, target, **_kwargs): self.target = target
+                    def start(self): self.target()
+
+                with patch("app.threading.Thread", InlineThread), patch("app.launch_generate", return_value=expected) as launch:
+                    app._launch_image_action("generate")
+                    app._poll_image_bridge()
+                launch.assert_called_once()
+                args, kwargs = launch.call_args
+                self.assertEqual(root, args[0])
+                self.assertEqual("rainy Tokyo station at night", args[1])
+                self.assertEqual("Tokyo Chill", args[2]["channel"])
+                self.assertEqual("雨の夜、君を思う", args[2]["title"])
+                app.load_image_project_folder.assert_called_once_with(root, refresh=True)
+                self.assertIn("Project refreshed", app.image_run_summary.get())
+                app.load_image_project_folder.reset_mock()
+                failed = LaunchResult(False, "Image program timed out; previous outputs restored.",
+                    action="edit", project_dir=root, timed_out=True)
+                with patch("app.messagebox.showerror"):
+                    app._complete_image_action("edit", root, failed)
+                app.load_image_project_folder.assert_not_called()
+                self.assertIn("retained", app.status.get())
             finally:
                 app.destroy()
 

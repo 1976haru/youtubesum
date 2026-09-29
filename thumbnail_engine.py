@@ -12,7 +12,7 @@ from layout_engine import render_candidate_text
 from typography_engine import _installed_font
 from typography.storage_assets import load_image_storage_assets
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.1"
 OUTPUT_SIZE = (1280, 720)
 COMPLETED_MODE = "완성 썸네일(글자 보호)"
 RAW_MODE = "텍스트 없는 원본 이미지"

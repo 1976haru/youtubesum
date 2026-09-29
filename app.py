@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import subprocess
 import sys
+import threading
 import traceback
 from pathlib import Path
 import tkinter as tk
@@ -16,7 +18,7 @@ from motion_engine import PRESETS, render
 from typography_engine import TYPOGRAPHY_PRESETS, preset_names
 from typography.linebreak_engine import choose_line_break
 from typography.storage_assets import load_image_storage_assets
-from image_bridge import ImageProject, launch_edit, launch_generate, load_image_project
+from image_bridge import ImageProject, LaunchResult, launch_edit, launch_generate, load_image_project
 from typography.text_style import get_preset, PRESETS_BY_CHANNEL
 from typography.text_renderer_skia import render_title
 from typography.thumbnail_layouts import choose_layout
@@ -115,6 +117,17 @@ class App(tk.Tk):
         self.image_project: ImageProject | None = None
         self.image_project_path = tk.StringVar(value="No image project open")
         self.image_bridge_status = tk.StringVar(value="clean canvas — · safe zones — · subject boxes — · palette — · manifest —")
+        configured_image_exe = os.environ.get("IMAGE_PROGRAM_EXE", "")
+        bridge_mode = os.environ.get("IMAGE_BRIDGE_MODE", "cli")
+        project_root = os.environ.get("IMAGE_PROJECT_ROOT", "(current directory)")
+        executable_ready = bool(configured_image_exe and Path(configured_image_exe).is_file())
+        connection = f"Image program {'ready' if executable_ready else 'not configured'}: {configured_image_exe or 'set IMAGE_PROGRAM_EXE'}"
+        self.image_run_summary = tk.StringVar(value=f"{connection} · bridge mode: {bridge_mode} · project root: {project_root}")
+        self.image_prompt = tk.StringVar()
+        self.image_edit_instruction = tk.StringVar()
+        self.image_bridge_queue = queue.Queue()
+        self._image_action_running = False
+        self._image_action_buttons = []
         self._image_bridge_palette = {}
         self._image_bridge_position_baselines = {}
         ttk.Label(self, text="YOUTUBE DYNAMIC THUMBNAIL STUDIO", font=("Segoe UI", 18, "bold")).pack(pady=(14, 2))
@@ -400,11 +413,17 @@ class App(tk.Tk):
     def _tab_live_composer(self, notebook):
         tab = ttk.Frame(notebook); notebook.add(tab, text="Live Composer")
         toolbar = ttk.Frame(tab); toolbar.pack(fill="x", padx=10, pady=5)
-        ttk.Button(toolbar, text="프로젝트 폴더 열기", command=self.open_image_project).pack(side="left")
+        self.image_project_button = ttk.Button(toolbar, text="프로젝트 폴더 열기", command=self.open_image_project)
+        self.image_project_button.pack(side="left")
         ttk.Button(toolbar, text="A/B/C 배경 생성", command=self.build_composer_backgrounds).pack(side="left", padx=5)
-        ttk.Button(toolbar, text="배경 생성", command=self.launch_image_generate).pack(side="left", padx=(18, 3))
-        ttk.Button(toolbar, text="배경 편집", command=self.launch_image_edit).pack(side="left", padx=3)
-        ttk.Button(toolbar, text="image에서 새로고침", command=self.refresh_image_project).pack(side="left", padx=3)
+        self.image_generate_button = ttk.Button(toolbar, text="배경 생성", command=self.launch_image_generate)
+        self.image_generate_button.pack(side="left", padx=(18, 3))
+        self.image_edit_button = ttk.Button(toolbar, text="배경 편집", command=self.launch_image_edit)
+        self.image_edit_button.pack(side="left", padx=3)
+        self.image_refresh_button = ttk.Button(toolbar, text="image에서 새로고침", command=self.refresh_image_project)
+        self.image_refresh_button.pack(side="left", padx=3)
+        self._image_action_buttons = [self.image_project_button, self.image_generate_button,
+                                      self.image_edit_button, self.image_refresh_button]
         ttk.Label(tab, textvariable=self.image_project_path, anchor="w", foreground="#34475b").pack(fill="x", padx=12)
         ttk.Label(tab, textvariable=self.image_bridge_status, anchor="w", foreground="#555").pack(fill="x", padx=12, pady=(0, 3))
         text_fields = ttk.Frame(tab); text_fields.pack(fill="x", padx=10, pady=(0, 4))
@@ -412,6 +431,12 @@ class App(tk.Tk):
                                        ("EP", self.composer_episode, 9), ("Story label", self.composer_story, 16)):
             ttk.Label(text_fields, text=label).pack(side="left", padx=(2, 3))
             ttk.Entry(text_fields, textvariable=variable, width=width).pack(side="left", padx=(0, 8))
+        bridge_fields = ttk.Frame(tab); bridge_fields.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Label(bridge_fields, text="Generate prompt").pack(side="left", padx=(2, 3))
+        ttk.Entry(bridge_fields, textvariable=self.image_prompt, width=40).pack(side="left", padx=(0, 9))
+        ttk.Label(bridge_fields, text="Edit instruction").pack(side="left", padx=(2, 3))
+        ttk.Entry(bridge_fields, textvariable=self.image_edit_instruction, width=48).pack(side="left", fill="x", expand=True)
+        ttk.Label(tab, textvariable=self.image_run_summary, anchor="w", foreground="#3e5c77", wraplength=1120).pack(fill="x", padx=12, pady=(0, 4))
 
         body = ttk.Frame(tab); body.pack(fill="both", expand=True, padx=10, pady=4)
         preview = ttk.Frame(body); preview.pack(side="left", fill="both", expand=True, padx=(0, 10))
@@ -1013,11 +1038,80 @@ class App(tk.Tk):
             return self.open_image_project()
         return self.load_image_project_folder(folder, refresh=self.image_project is not None)
 
-    def _launch_image_action(self, action):
+    def _legacy_launch_image_action(self, action):
         if not self.image_project:
             return messagebox.showinfo("Image Bridge", "먼저 프로젝트 폴더를 열어 주세요.")
         result = launch_generate(self.image_project.folder) if action == "generate" else launch_edit(self.image_project.folder)
         messagebox.showinfo("Image Bridge", result.message)
+        return result
+
+    def _launch_image_action(self, action):
+        if not self.image_project:
+            return messagebox.showinfo("Image Bridge", "먼저 프로젝트 폴더를 열어 주세요.")
+        if self._image_action_running:
+            self.image_run_summary.set("An image-program operation is already running.")
+            return
+        folder = self.image_project.folder
+        options = {"channel": self.composer_channel.get(), "story_type": self.composer_story.get(),
+            "title": self.composer_title.get(), "subtitle": self.composer_subtitle.get(),
+            "episode": self.composer_episode.get(), "preferred_typography": self.composer_style.get()}
+        prompt = self.image_prompt.get().strip() if action == "generate" else ""
+        edit_request = self.image_edit_instruction.get().strip() if action == "edit" else ""
+        self._image_action_running = True
+        self.image_run_summary.set(f"Image program {action} is running; validating generated bridge files…")
+        for button in self._image_action_buttons:
+            button.configure(state="disabled")
+
+        def worker():
+            try:
+                if action == "generate":
+                    result = launch_generate(folder, prompt, options)
+                else:
+                    result = launch_edit(folder, edit_request, options)
+            except Exception as exc:
+                result = LaunchResult(False, f"Image Bridge failed safely: {exc}", action=action, project_dir=folder)
+            self.image_bridge_queue.put((action, folder, result))
+
+        threading.Thread(target=worker, name=f"image-bridge-{action}", daemon=True).start()
+        self.after(100, self._poll_image_bridge)
+
+    def _poll_image_bridge(self):
+        try:
+            action, folder, result = self.image_bridge_queue.get_nowait()
+        except queue.Empty:
+            if self._image_action_running:
+                self.after(100, self._poll_image_bridge)
+            return
+        self._complete_image_action(action, folder, result)
+
+    def _complete_image_action(self, action, folder, result: LaunchResult):
+        self._image_action_running = False
+        for button in self._image_action_buttons:
+            button.configure(state="normal")
+        log_parts = [result.message]
+        if result.return_code is not None:
+            log_parts.append(f"exit code: {result.return_code}")
+        if result.warnings:
+            log_parts.append("warnings: " + "; ".join(result.warnings))
+        if result.stdout.strip():
+            log_parts.append("stdout: " + result.stdout.strip()[-1800:])
+        if result.stderr.strip():
+            log_parts.append("stderr: " + result.stderr.strip()[-1800:])
+        summary = "\n".join(log_parts)
+        self.image_run_summary.set(summary[-3000:])
+        logging.info("Image Bridge %s for %s: %s", action, folder, summary)
+        if result.launched:
+            try:
+                self.load_image_project_folder(folder, refresh=True)
+                self.image_run_summary.set(summary[:2100] + "\nProject refreshed from returned canvas/sidecars.")
+            except Exception as exc:
+                detail = f"Image program succeeded, but project refresh failed safely: {exc}"
+                logging.exception(detail)
+                self.image_run_summary.set((summary + "\n" + detail)[-3000:])
+                messagebox.showwarning("Image Bridge", detail)
+        else:
+            self.status.set("Image Bridge failed; existing project settings were retained.")
+            messagebox.showerror("Image Bridge", result.message)
         return result
 
     def launch_image_generate(self):

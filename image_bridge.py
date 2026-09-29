@@ -1,9 +1,11 @@
-"""Project-folder bridge for image sidecars and future image-program calls."""
+"""Project-folder sidecar bridge and subprocess client for an image application."""
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,11 +54,16 @@ def _image_size(path: Path | None) -> tuple[int, int]:
 
 def _payload_records(payload: dict[str, Any], keys: tuple[str, ...]) -> tuple[list[tuple[str, Any]], tuple[int, int]]:
     dimensions = payload.get("canvas_size", payload.get("image_size", payload.get("size", CANVAS_SIZE)))
-    if isinstance(dimensions, dict):
-        source_size = (int(dimensions.get("width", CANVAS_SIZE[0])), int(dimensions.get("height", CANVAS_SIZE[1])))
-    elif isinstance(dimensions, (list, tuple)) and len(dimensions) == 2:
-        source_size = (int(dimensions[0]), int(dimensions[1]))
-    else:
+    try:
+        if isinstance(dimensions, dict):
+            source_size = (int(dimensions.get("width", CANVAS_SIZE[0])), int(dimensions.get("height", CANVAS_SIZE[1])))
+        elif isinstance(dimensions, (list, tuple)) and len(dimensions) == 2:
+            source_size = (int(dimensions[0]), int(dimensions[1]))
+        else:
+            source_size = CANVAS_SIZE
+        if min(source_size) <= 0:
+            source_size = CANVAS_SIZE
+    except (TypeError, ValueError):
         source_size = CANVAS_SIZE
     value: Any = payload
     for key in keys:
@@ -83,12 +90,15 @@ def _rect(record: Any, source_size: tuple[int, int], target_size: tuple[int, int
     else:
         value, units = record, ""
     if isinstance(value, dict):
-        if all(key in value for key in ("x1", "y1", "x2", "y2")):
-            value = (value["x1"], value["y1"], float(value["x2"]) - float(value["x1"]),
-                     float(value["y2"]) - float(value["y1"]))
-        else:
-            value = (value.get("x"), value.get("y"), value.get("width", value.get("w")),
-                     value.get("height", value.get("h")))
+        try:
+            if all(key in value for key in ("x1", "y1", "x2", "y2")):
+                value = (value["x1"], value["y1"], float(value["x2"]) - float(value["x1"]),
+                         float(value["y2"]) - float(value["y1"]))
+            else:
+                value = (value.get("x"), value.get("y"), value.get("width", value.get("w")),
+                         value.get("height", value.get("h")))
+        except (TypeError, ValueError):
+            return None
     if not isinstance(value, (list, tuple)) or len(value) != 4 or any(item is None for item in value):
         return None
     try:
@@ -172,8 +182,15 @@ def _parse_composition(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(positions, dict):
         return {}
     source_size = raw.get("canvas_size", CANVAS_SIZE)
-    if isinstance(source_size, dict):
-        source_size = (int(source_size.get("width", 1280)), int(source_size.get("height", 720)))
+    try:
+        if isinstance(source_size, dict):
+            source_size = (int(source_size.get("width", 1280)), int(source_size.get("height", 720)))
+        else:
+            source_size = tuple(map(int, source_size))
+        if len(source_size) != 2 or min(source_size) <= 0:
+            source_size = CANVAS_SIZE
+    except (TypeError, ValueError):
+        source_size = CANVAS_SIZE
     converted = {}
     for role, value in positions.items():
         if role not in ROLE_KEYS:
@@ -230,41 +247,248 @@ def load_image_project(folder: str | Path, canvas_size: tuple[int, int] = CANVAS
         if key not in points:
             x, y, width, height = record["bbox"]
             points[key] = ((x + width / 2) / image_size[0], (y + height / 2) / image_size[1])
-    valid_json = {key: bool(value) and paths[key].is_file() for key, value in (
-        ("subjects", subject_raw), ("safe_zones", safe_raw), ("palette", palette_raw),
-        ("composition", composition_raw), ("manifest", manifest_raw))}
+    parsed_palette = _palette_defaults(palette_raw)
+    parsed_composition = _parse_composition(composition_raw)
+    parsed_manifest = _manifest_defaults(manifest_raw)
+    valid_json = {
+        "subjects": bool(subjects) and paths["subjects"].is_file(),
+        "safe_zones": bool(safe) and paths["safe_zones"].is_file(),
+        "palette": bool(parsed_palette) and paths["palette"].is_file(),
+        "composition": bool(parsed_composition.get("positions")) and paths["composition"].is_file(),
+        "manifest": any(parsed_manifest.values()) and paths["manifest"].is_file(),
+    }
     status = {"clean_canvas": clean is not None, "reference": reference is not None, **valid_json}
     warnings = tuple(f"{key} exists but is empty or invalid" for key, value in valid_json.items()
                      if paths[key].is_file() and not value)
-    return ImageProject(root, source, clean, reference, subjects, safe, _palette_defaults(palette_raw),
-                        _parse_composition(composition_raw), _manifest_defaults(manifest_raw), points, status, warnings)
+    return ImageProject(root, source, clean, reference, subjects, safe, parsed_palette,
+                        parsed_composition, parsed_manifest, points, status, warnings)
 
 
 @dataclass(frozen=True)
 class LaunchResult:
     launched: bool
     message: str
-    process: subprocess.Popen | None = None
+    action: str = ""
+    project_dir: Path | None = None
+    return_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    warnings: tuple[str, ...] = ()
+    project: ImageProject | None = None
+    timed_out: bool = False
 
 
-def _launch(action: str, project_folder: str | Path, executable: str | Path | None = None) -> LaunchResult:
-    command = executable or os.environ.get("IMAGE_PROGRAM_EXE", "")
-    if not command:
-        return LaunchResult(False, "No image-program executable is configured; integration is reserved for a future version.")
-    program = Path(command).expanduser()
-    if not program.is_file():
-        return LaunchResult(False, f"Configured image program was not found: {program}")
+OUTPUT_FILES = ("canvas_clean.png", "subject_boxes.json", "safe_zones.json", "palette.json",
+                "composition.json", "project_manifest.json")
+SIDECAR_FILES = OUTPUT_FILES[1:]
+DEFAULT_TIMEOUT_SECONDS = 600
+MAX_LOG_CHARS = 12000
+
+
+def refresh_project(project_dir: str | Path) -> ImageProject:
+    """Re-read bridge outputs after generation/edit, including all refreshed sidecars."""
+    return load_image_project(project_dir)
+
+
+def _resolve_project_dir(project_dir: str | Path | None) -> Path:
+    root = Path(os.environ.get("IMAGE_PROJECT_ROOT", "") or Path.cwd()).expanduser()
+    if project_dir in (None, ""):
+        candidate = root
+    else:
+        candidate = Path(project_dir).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+    candidate = candidate.resolve()
+    if not candidate.is_dir():
+        raise NotADirectoryError(f"Image project directory does not exist: {candidate}")
+    return candidate
+
+
+def _request(action: str, project_dir: Path, prompt: str, edit_request: str,
+             options: dict[str, Any] | None) -> dict[str, Any]:
+    opts = dict(options or {})
+    opts.pop("timeout", None)
+    project = load_image_project(project_dir)
+    manifest = project.manifest
+    request = {
+        "protocol": "youtubesum-image-bridge/1",
+        "action": action,
+        "project_dir": str(project_dir),
+        "channel": opts.pop("channel", manifest.get("channel", "")),
+        "story_type": opts.pop("story_type", manifest.get("story_type", "")),
+        "title": opts.pop("title", manifest.get("title", "")),
+        "subtitle": opts.pop("subtitle", manifest.get("subtitle", "")),
+        "prompt": prompt or opts.pop("prompt", ""),
+        "edit_instruction": edit_request or opts.pop("edit_instruction", ""),
+        "options": opts,
+        "outputs": list(OUTPUT_FILES),
+    }
+    return request
+
+
+def _command(program: Path, mode: str, request: dict[str, Any]) -> tuple[list[str], str | None]:
+    if mode in ("json-stdin", "stdin-json"):
+        return [str(program), "--image-bridge"], json.dumps(request, ensure_ascii=False)
+    if mode not in ("cli", "argv"):
+        raise ValueError(f"Unsupported IMAGE_BRIDGE_MODE: {mode!r}; use cli or json-stdin")
+    args = [str(program), "--action", request["action"], "--project-dir", request["project_dir"]]
+    for key, flag in (("channel", "--channel"), ("story_type", "--story-type"),
+                      ("title", "--title"), ("subtitle", "--subtitle")):
+        value = request.get(key)
+        if value:
+            args.extend((flag, str(value)))
+    for key, flag in (("prompt", "--prompt"), ("edit_instruction", "--edit-instruction")):
+        if request.get(key):
+            args.extend((flag, str(request[key])))
+    args.extend(("--options-json", json.dumps(request["options"], ensure_ascii=False)))
+    return args, None
+
+
+def _file_digest(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    import hashlib
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _restore_backup(project_dir: Path, backup_dir: Path, prior: set[str], *, remove_new: bool) -> None:
+    for name in OUTPUT_FILES:
+        target, backup = project_dir / name, backup_dir / name
+        if name in prior and backup.is_file():
+            restore = project_dir / f".{name}.ydts-restore"
+            shutil.copy2(backup, restore)
+            os.replace(restore, target)
+        elif remove_new and name not in prior and target.exists():
+            target.unlink()
+
+
+def _validate_result(project_dir: Path, backup_dir: Path, prior: set[str], old_digest: str | None):
+    warnings: list[str] = []
+    canvas = project_dir / "canvas_clean.png"
+    valid = False
+    if canvas.is_file():
+        try:
+            with Image.open(canvas) as image:
+                image.verify()
+            valid = True
+        except (OSError, ValueError):
+            valid = False
+    if not valid or (old_digest is not None and _file_digest(canvas) == old_digest):
+        _restore_backup(project_dir, backup_dir, prior, remove_new=True)
+        reason = "canvas_clean.png is missing/invalid" if not valid else "canvas_clean.png was not updated"
+        return False, (reason,), None
+
+    for name in SIDECAR_FILES:
+        target = project_dir / name
+        sidecar_valid = False
+        if target.is_file():
+            sidecar_valid = bool(_read_json(target))
+        if not sidecar_valid:
+            if name in prior and (backup_dir / name).is_file():
+                shutil.copy2(backup_dir / name, target)
+                warnings.append(f"{name} missing/invalid; kept the previous sidecar")
+            else:
+                warnings.append(f"{name} missing/invalid; local/default fallback will be used")
+        elif name in prior and _file_digest(target) == _file_digest(backup_dir / name):
+            warnings.append(f"{name} was unchanged; its existing metadata was retained")
+    project = refresh_project(project_dir)
+    status_keys = {"subject_boxes.json": "subjects", "safe_zones.json": "safe_zones",
+                   "palette.json": "palette", "composition.json": "composition",
+                   "project_manifest.json": "manifest"}
+    restored_any = False
+    for name, key in status_keys.items():
+        if project.status.get(key):
+            continue
+        if name in prior and (backup_dir / name).is_file():
+            shutil.copy2(backup_dir / name, project_dir / name)
+            warnings.append(f"{name} was not understood; kept the previous sidecar")
+            restored_any = True
+        else:
+            warnings.append(f"{name} was not understood; defaults will be used")
+    if restored_any:
+        project = refresh_project(project_dir)
+    return True, tuple(dict.fromkeys(warnings)), project
+
+
+def _launch(action: str, project_dir: str | Path | None, *, prompt: str = "", edit_request: str = "",
+            options: dict[str, Any] | None = None, executable: str | Path | None = None,
+            timeout: float | None = None) -> LaunchResult:
     try:
-        process = subprocess.Popen([str(program), f"--{action}", "--project", str(Path(project_folder).resolve())],
-                                   cwd=str(Path(project_folder).resolve()), shell=False)
-        return LaunchResult(True, f"Started image program ({action}).", process)
+        root = _resolve_project_dir(project_dir)
+    except (OSError, ValueError) as exc:
+        return LaunchResult(False, str(exc), action=action)
+    configured = executable or os.environ.get("IMAGE_PROGRAM_EXE", "")
+    if not configured:
+        return LaunchResult(False, "IMAGE_PROGRAM_EXE is not configured.", action=action, project_dir=root)
+    program = Path(configured).expanduser()
+    if not program.is_absolute():
+        program = (Path.cwd() / program).resolve()
+    if not program.is_file():
+        return LaunchResult(False, f"Image program executable was not found: {program}", action=action, project_dir=root)
+    try:
+        request = _request(action, root, prompt, edit_request, options)
+        mode = os.environ.get("IMAGE_BRIDGE_MODE", "cli").strip().casefold()
+        args, input_text = _command(program, mode, request)
+    except (OSError, TypeError, ValueError) as exc:
+        return LaunchResult(False, str(exc), action=action, project_dir=root)
+
+    timeout_value = timeout if timeout is not None else (options or {}).get("timeout", os.environ.get("IMAGE_BRIDGE_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
+    try:
+        timeout_value = max(1.0, float(timeout_value))
+    except (TypeError, ValueError):
+        timeout_value = float(DEFAULT_TIMEOUT_SECONDS)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix=".ydts_image_bridge_", dir=root) as backup_name:
+            backup_dir = Path(backup_name)
+            prior = set()
+            for name in OUTPUT_FILES:
+                source = root / name
+                if source.is_file():
+                    shutil.copy2(source, backup_dir / name)
+                    prior.add(name)
+            old_digest = _file_digest(root / "canvas_clean.png")
+            try:
+                completed = subprocess.run(args, cwd=str(root), input=input_text, text=True,
+                    encoding="utf-8", errors="replace", capture_output=True, timeout=timeout_value,
+                    check=False, shell=False)
+            except subprocess.TimeoutExpired as exc:
+                _restore_backup(root, backup_dir, prior, remove_new=True)
+                stdout = (exc.stdout or "")
+                stderr = (exc.stderr or "")
+                return LaunchResult(False, f"Image program timed out after {timeout_value:g}s; project outputs were restored.",
+                    action, root, None, str(stdout)[-MAX_LOG_CHARS:], str(stderr)[-MAX_LOG_CHARS:], timed_out=True)
+            except OSError as exc:
+                _restore_backup(root, backup_dir, prior, remove_new=True)
+                return LaunchResult(False, f"Could not start image program: {exc}; project outputs were restored.", action, root)
+            stdout = completed.stdout[-MAX_LOG_CHARS:]
+            stderr = completed.stderr[-MAX_LOG_CHARS:]
+            if completed.returncode != 0:
+                _restore_backup(root, backup_dir, prior, remove_new=True)
+                detail = stderr.strip() or stdout.strip() or "no diagnostic output"
+                return LaunchResult(False, f"Image program exited with code {completed.returncode}: {detail[-700:]}; project outputs were restored.",
+                    action, root, completed.returncode, stdout, stderr)
+            ok, warnings, project = _validate_result(root, backup_dir, prior, old_digest)
+            if not ok:
+                return LaunchResult(False, "Image program reported success but did not return a fresh valid canvas_clean.png; project outputs were restored.",
+                    action, root, completed.returncode, stdout, stderr, warnings)
+            summary = f"Image program {action} completed."
+            if warnings:
+                summary += " Some sidecars were missing; previous values or local defaults were retained."
+            return LaunchResult(True, summary, action, root, completed.returncode, stdout, stderr, warnings, project)
     except OSError as exc:
-        return LaunchResult(False, f"Could not start image program: {exc}")
+        return LaunchResult(False, f"Image Bridge could not prepare safe output recovery: {exc}", action=action, project_dir=root)
 
 
-def launch_generate(project_folder: str | Path, executable: str | Path | None = None) -> LaunchResult:
-    return _launch("generate", project_folder, executable)
+def launch_generate(project_dir: str | Path | None, prompt: str = "", options: dict[str, Any] | None = None,
+                    *, executable: str | Path | None = None, timeout: float | None = None) -> LaunchResult:
+    return _launch("generate", project_dir, prompt=prompt, options=options, executable=executable, timeout=timeout)
 
 
-def launch_edit(project_folder: str | Path, executable: str | Path | None = None) -> LaunchResult:
-    return _launch("edit", project_folder, executable)
+def launch_edit(project_dir: str | Path | None, edit_request: str = "", options: dict[str, Any] | None = None,
+                *, executable: str | Path | None = None, timeout: float | None = None) -> LaunchResult:
+    return _launch("edit", project_dir, edit_request=edit_request, options=options, executable=executable, timeout=timeout)
