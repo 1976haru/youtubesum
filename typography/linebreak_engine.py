@@ -69,6 +69,8 @@ def _break_penalty(text: str, point: int) -> float:
             "KATAKANA" in previous_name and "KATAKANA" in following_name) or (
             "CJK" in previous_name and "CJK" in following_name):
             penalty += 2.1
+    if previous not in PUNCTUATION and "CJK" in previous_name and "HIRAGANA" in following_name             and following not in "のがをにでともはへやねよ":
+        penalty += 1.6  # keep okurigana with its kanji stem (逃|した, 待|っていた)
     if right and right[0] in PUNCTUATION:
         penalty += 20
     return penalty
