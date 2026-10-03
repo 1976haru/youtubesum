@@ -62,6 +62,43 @@ def sync_text_height(layer: Layer, keep_center: bool = True) -> None:
             layer.height = height
 
 
+def preset_text_props(style_name: str, channel: str, palette: dict | None = None) -> dict[str, Any]:
+    """TextLayer properties for a named channel style (palette sidecar values win when present)."""
+    preset = get_preset(style_name, channel)
+    palette = palette or {}
+    tokyo = channel == "Tokyo Chill"
+    return {"channel": channel, "fill": palette.get("fill_color") or preset.fill,
+            "gradient": not palette.get("fill_color"), "gradient_end": preset.gradient_end,
+            "outline_color": palette.get("stroke_color") or preset.outline,
+            "outline_width": float(palette.get("outline_width") or preset.outline_width),
+            "secondary_outline_width": 0.0,
+            "shadow_color": preset.shadow, "shadow_blur": float(preset.shadow_blur), "shadow_x": 4.0, "shadow_y": 5.0,
+            "shadow_opacity": round(0.75 * float(palette.get("shadow_strength") or 0.9), 2),
+            "glow_color": preset.glow, "glow_blur": float(preset.glow_blur),
+            "glow_opacity": round((0.55 if tokyo else 0.22) * float(palette.get("glow_strength") or 1.0), 2),
+            "letter_spacing": float(preset.letter_spacing),
+            "highlight_color": palette.get("highlight_color") or preset.accent}
+
+
+# One-click text effect cards (applied on top of the current colours).
+TEXT_EFFECTS = {
+    "굵은 외곽선": {"outline_width": 16.0, "secondary_outline_width": 0.0, "glow_opacity": 0.0, "shadow_opacity": 0.6},
+    "이중 외곽선": {"outline_width": 10.0, "secondary_outline_width": 6.0, "secondary_outline_color": "#FFFFFF"},
+    "네온 글로우": {"glow_opacity": 0.75, "glow_blur": 18.0, "outline_width": 6.0},
+    "소프트 섀도": {"shadow_opacity": 0.7, "shadow_blur": 14.0, "shadow_x": 3.0, "shadow_y": 8.0, "glow_opacity": 0.0},
+    "시네마 플랫": {"outline_width": 0.0, "secondary_outline_width": 0.0, "glow_opacity": 0.0, "shadow_opacity": 0.45,
+                "shadow_blur": 18.0, "gradient": False},
+    "그라디언트": {"gradient": True},
+}
+
+CHANNEL_PALETTES = {
+    "Tokyo Chill": (("Neon Night", "#FFFFFF", "#1A0B2E", "#FF4FD8"), ("Rain Blue", "#F4FBFF", "#0B1F33", "#5FD3FF"),
+                    ("Cinema Gold", "#FFFFFF", "#141414", "#FFD34D"), ("Pink Haze", "#FFF6FB", "#3A1030", "#FF8FB8")),
+    "OLD POP LOUNGE": (("Warm Cream", "#FFF4DC", "#3A2618", "#F2C46B"), ("First Snow", "#FFFFFF", "#1E354A", "#B9E8FF"),
+                       ("Autumn", "#FFF4E3", "#3C271B", "#D99151"), ("Calm Navy", "#F7FBFF", "#233648", "#A7C9E6")),
+}
+
+
 def fit_backdrop(document: ThumbnailDocument) -> None:
     """Size the title gradient to the title: full-width when centred, else the title's side."""
     title, backdrop = document.by_role("main_title"), document.by_role("title_backdrop")
@@ -98,19 +135,10 @@ def default_document(slot: str, channel: str, style_name: str, texts: dict[str, 
     document.add(BackgroundLayer(name="배경", role="background", source=background_key, width=1280, height=720))
     tx, ty, tw, th = layout.title_box
     title_text = (texts.get("title") or ("思い出の夜" if tokyo else "懐かしい記憶")).strip()
-    fill = palette.get("fill_color") or preset.fill
-    title = TextLayer(name="메인 제목", role="main_title", text=title_text, channel=channel, x=tx, y=ty, width=tw,
-                      height=th, font_size=float(layout.nominal_size), font_weight=900, fill=fill,
-                      gradient=not palette.get("fill_color"), gradient_end=preset.gradient_end,
-                      outline_color=palette.get("stroke_color") or preset.outline,
-                      outline_width=float(palette.get("outline_width") or preset.outline_width),
-                      shadow_color=preset.shadow, shadow_blur=preset.shadow_blur, shadow_x=4, shadow_y=5,
-                      shadow_opacity=round(0.75 * float(palette.get("shadow_strength") or 0.9), 2),
-                      glow_color=preset.glow, glow_blur=preset.glow_blur,
-                      glow_opacity=round((0.55 if tokyo else 0.22) * float(palette.get("glow_strength") or 1.0), 2),
-                      letter_spacing=preset.letter_spacing, line_spacing=1.1, alignment=layout.align,
-                      highlight_word=choose_keyword(title_text), highlight_color=palette.get("highlight_color") or preset.accent,
-                      max_lines=layout.max_lines)
+    title = TextLayer(name="메인 제목", role="main_title", text=title_text, x=tx, y=ty, width=tw, height=th,
+                      font_size=float(layout.nominal_size), font_weight=900, line_spacing=1.1,
+                      alignment=layout.align, highlight_word=choose_keyword(title_text), max_lines=layout.max_lines,
+                      **preset_text_props(style_name, channel, palette))
     top_anchor = ty < 300
     sync_text_height(title, keep_center=False)
     # Lower titles sit on the layout box's bottom edge, upper titles on its top edge.

@@ -15,3 +15,5 @@ assets/
 *_C_STORY.jpg
 *_C_SCENERY.jpg
 *_MOTION.mp4
+editor_settings.json
+*.autosave.json

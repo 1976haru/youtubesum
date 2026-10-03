@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
+from editor.ui import ProEditor
 from motion_engine import PRESETS, render
 from typography_engine import TYPOGRAPHY_PRESETS, preset_names
 from typography.linebreak_engine import choose_line_break
@@ -48,7 +49,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"YouTube Dynamic Thumbnail Studio v{APP_VERSION}")
-        self.geometry("1540x1040"); self.minsize(1320, 920)
+        self.geometry("1600x1000"); self.minsize(1320, 860)
         self.src = tk.StringVar(); self.channel = tk.StringVar(value="Tokyo Chill")
         self.source_mode = tk.StringVar(value=TEMPLATE_MODE)
         self.focus_mode = tk.StringVar(value="자동")
@@ -130,12 +131,16 @@ class App(tk.Tk):
         self._image_action_buttons = []
         self._image_bridge_palette = {}
         self._image_bridge_position_baselines = {}
-        ttk.Label(self, text="YOUTUBE DYNAMIC THUMBNAIL STUDIO", font=("Segoe UI", 18, "bold")).pack(pady=(14, 2))
-        ttk.Label(self, text=f"v{APP_VERSION} · 3후보 미리보기 + Motion Intro · FFmpeg 포함", foreground="#555").pack()
-        ttk.Label(self, text="Motion uses FFmpeg · LGPLv3 · 같은 폴더 ydts_ffmpeg로 호환 빌드 교체 가능", foreground="#555").pack()
-        ttk.Button(self, text="오픈소스 라이선스", command=self.show_licenses).pack(anchor="e", padx=18, pady=(0, 2))
-        notebook = ttk.Notebook(self); notebook.pack(fill="both", expand=True, padx=14, pady=10)
+        header = ttk.Frame(self); header.pack(fill="x", padx=14, pady=(6, 0))
+        ttk.Label(header, text="YOUTUBE DYNAMIC THUMBNAIL STUDIO", font=("Segoe UI", 15, "bold")).pack(side="left")
+        ttk.Label(header, text=f"  v{APP_VERSION} · Pro Editor · 3후보 + Motion Intro · "
+                  "Motion uses FFmpeg · LGPLv3 · ydts_ffmpeg 교체 가능", foreground="#555").pack(side="left")
+        ttk.Button(header, text="오픈소스 라이선스", command=self.show_licenses).pack(side="right")
+        notebook = ttk.Notebook(self); notebook.pack(fill="both", expand=True, padx=8, pady=6)
+        self.notebook = notebook
+        self._tab_pro_editor(notebook)
         self._tab_candidates(notebook); self._tab_live_composer(notebook); self._tab_motion(notebook); self._tab_history(notebook)
+        notebook.select(self.pro_editor)
         ttk.Label(self, textvariable=self.status, wraplength=1100).pack(pady=(0, 8))
         self.src.trace_add("write", self._source_changed)
         self.source_mode.trace_add("write", lambda *_: self._update_mode_guard())
@@ -323,6 +328,10 @@ class App(tk.Tk):
             if role == "protagonist": self.protagonist = selection["point"]
             else: self.counterpart = selection["point"]
             self.focus_source = source; self._update_focus_state(); self._invalidate_candidates(); dialog.destroy()
+
+    def _tab_pro_editor(self, notebook):
+        self.pro_editor = ProEditor(notebook, settings_path=APP_HOME / "editor_settings.json", status=self.status)
+        notebook.add(self.pro_editor, text="★ Pro Editor")
 
     def _tab_candidates(self, notebook):
         tab = ttk.Frame(notebook); notebook.add(tab, text="① 3후보 미리보기"); self.source_row(tab)
@@ -1255,7 +1264,20 @@ class App(tk.Tk):
         return self._handle(work)
 
 
+def _argument(flag):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv and sys.argv.index(flag) + 1 < len(sys.argv) else None
+
+
 def main():
+    # Full GUI smoke test of the Pro Editor (real Tk events), used for the packaged EXE.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--self-test-editor":
+        from editor.selftest import main_self_test
+        app = App()
+        try:
+            code = main_self_test(app, sys.argv[2], _argument("--capture"), _argument("--report"))
+        finally:
+            app.destroy()
+        raise SystemExit(code)
     # Headless hook used only to validate the packaged engine on real Windows paths.
     if len(sys.argv) == 3 and sys.argv[1] == "--self-test-project":
         app = App()

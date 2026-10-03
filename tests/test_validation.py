@@ -43,7 +43,7 @@ class CandidateValidation(unittest.TestCase):
             differences = [float(np.mean(cv2.absdiff(decoded[i], decoded[j]))) for i, j in ((0, 1), (0, 2), (1, 2))]
             self.assertTrue(all(value > 2.0 for value in differences), differences)
             manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-        self.assertEqual("0.5.1", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
+        self.assertEqual("0.6.0", manifest["version"]); self.assertEqual(3, len(manifest["candidates"]))
 
     def test_ascii_paths(self):
         self.run_case("ascii input", "ascii output")
