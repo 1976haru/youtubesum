@@ -57,7 +57,8 @@ def _drag(app, editor, start_doc, end_doc, steps: int = 6, state: int = 0) -> No
 
 
 def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path | None = None,
-                         workdir: str | Path | None = None, fonts_timeout: float = 45.0) -> dict:
+                         workdir: str | Path | None = None, fonts_timeout: float = 45.0,
+                         bridge_generate: bool = False) -> dict:
     editor = app.pro_editor
     app.notebook.select(editor)
     app.deiconify()
@@ -216,6 +217,23 @@ def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path
         texts_after = {slot: [layer.to_dict() for layer in doc.ordered() if layer.type != "background"]
                        for slot, doc in editor.state.documents.items()}
         check("bridge_refresh_preserves_layers", texts_before == texts_after)
+        if bridge_generate:
+            # Real subprocess through the Image Bridge launcher (IMAGE_PROGRAM_EXE must be configured).
+            editor._ask_relayout = lambda _collisions: "keep"
+            before_bg = editor.state.background_image("A").copy()
+            layers_before = {slot: [layer.to_dict() for layer in doc.ordered() if layer.type != "background"]
+                             for slot, doc in editor.state.documents.items()}
+            editor.image_prompt.set("rainy Tokyo station at night, 東京")
+            editor.bridge_generate()
+            deadline = time.perf_counter() + 180
+            while (editor._bridge_running or not editor._bridge_queue.empty()) and time.perf_counter() < deadline:
+                _pump(app, 0.1)
+            _pump(app, 0.3)
+            layers_after = {slot: [layer.to_dict() for layer in doc.ordered() if layer.type != "background"]
+                            for slot, doc in editor.state.documents.items()}
+            changed_bg = not np.array_equal(before_bg, editor.state.background_image("A"))
+            check("bridge_generate_subprocess", changed_bg and layers_before == layers_after,
+                  {"status": editor.bridge_status.get()[:160], "message": editor.message.get()[:160]})
         details["timings"] = editor.timing_summary()
     except Exception:
         results["exception"] = "FAIL"
@@ -240,8 +258,15 @@ def capture_window(app, path: str | Path) -> Path:
     return path
 
 
-def main_self_test(app, folder: str, capture: str | None, report: str | None) -> int:
-    outcome = run_editor_self_test(app, folder, capture=capture)
+def main_self_test(app, folder: str, capture: str | None, report: str | None, bridge_generate: bool = False) -> int:
+    if bridge_generate:
+        # The bridge writes into the project folder; work on a copy so the source stays untouched.
+        import shutil
+        scratch = Path(tempfile.mkdtemp(prefix="ydts_bridge_"))
+        copy = scratch / "브리지 프로젝트 東京"
+        shutil.copytree(folder, copy)
+        folder = str(copy)
+    outcome = run_editor_self_test(app, folder, capture=capture, bridge_generate=bridge_generate)
     text = json.dumps(outcome, ensure_ascii=False, indent=2)
     if report:
         Path(report).write_text(text, encoding="utf-8")

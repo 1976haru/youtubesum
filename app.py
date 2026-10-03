@@ -1274,7 +1274,8 @@ def main():
         from editor.selftest import main_self_test
         app = App()
         try:
-            code = main_self_test(app, sys.argv[2], _argument("--capture"), _argument("--report"))
+            code = main_self_test(app, sys.argv[2], _argument("--capture"), _argument("--report"),
+                                  "--bridge-generate" in sys.argv)
         finally:
             app.destroy()
         raise SystemExit(code)
