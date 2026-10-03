@@ -107,6 +107,8 @@ py -3.10 -m compileall -q app.py image_bridge.py thumbnail_engine.py layout_engi
 py -3.10 -m unittest discover -s tests -v
 py -3.10 scripts\compare_tokyo_samples.py sample-1.png sample-2.png sample-3.png
 dist\YouTubeDynamicThumbnailStudio\YouTubeDynamicThumbnailStudio.exe --self-test-project examples\tokyo_chill_project
+dist\YouTubeDynamicThumbnailStudio\YouTubeDynamicThumbnailStudio.exe --self-test-editor examples\old_pop_lounge_project --report build\editor_report.json
+py -3.10 scripts\v06_validation.py
 ```
 
 The Tokyo comparison script saves before/A/B/C 340px contact sheets for three real images under `build\v04_tokyo_before_after`; the Old Pop comparison saves three under `build\v041_oldpop_before_after`. Both leave source images untouched. Automated tests cover Japanese line-break snapshots, mixed-script font fallback, background-fit scoring, project sidecars, Live Composer controls/drag/history/independent candidates, CLI and JSON-stdin bridge requests, output rollback/timeout/partial-sidecar handling, GUI auto-refresh, candidate distinction, and Motion rendering. For packaged project-folder smoke tests, run `YouTubeDynamicThumbnailStudio.exe --self-test-project examples\tokyo_chill_project` (or `old_pop_lounge_project`). Generated preview artifacts under `build/` are local QA outputs and are ignored by Git.
