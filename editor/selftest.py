@@ -28,6 +28,15 @@ def _pump(app, seconds: float = 0.0) -> None:
         time.sleep(0.01)
 
 
+_CLOCK = [int(time.monotonic() * 1000)]
+
+
+def _stamp() -> int:
+    """Increasing event timestamps; without them Tk sees repeated synthetic presses as double-clicks."""
+    _CLOCK[0] += 1000
+    return _CLOCK[0]
+
+
 def _canvas_point(editor, x: float, y: float) -> tuple[int, int]:
     vx, vy = editor.view.to_view(x, y)
     return round(vx - editor.canvas.canvasx(0)), round(vy - editor.canvas.canvasy(0))
@@ -37,13 +46,13 @@ def _drag(app, editor, start_doc, end_doc, steps: int = 6, state: int = 0) -> No
     canvas = editor.canvas
     sx, sy = _canvas_point(editor, *start_doc)
     ex, ey = _canvas_point(editor, *end_doc)
-    canvas.event_generate("<ButtonPress-1>", x=sx, y=sy, state=state)
+    canvas.event_generate("<ButtonPress-1>", x=sx, y=sy, state=state, time=_stamp())
     _pump(app)
     for step in range(1, steps + 1):
         canvas.event_generate("<B1-Motion>", x=round(sx + (ex - sx) * step / steps),
-                              y=round(sy + (ey - sy) * step / steps), state=state | 0x100)
+                              y=round(sy + (ey - sy) * step / steps), state=state | 0x100, time=_stamp())
         _pump(app)
-    canvas.event_generate("<ButtonRelease-1>", x=ex, y=ey, state=state | 0x100)
+    canvas.event_generate("<ButtonRelease-1>", x=ex, y=ey, state=state | 0x100, time=_stamp())
     _pump(app)
 
 
