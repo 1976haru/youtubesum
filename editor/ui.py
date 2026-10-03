@@ -386,6 +386,7 @@ class ProEditor(ttk.Frame):
     def _project_ready(self, state: ProjectState, _unused) -> None:
         self.set_state(state)
         self.message.set(f"{state.channel} · {state.style} · A/B/C 편집 문서 준비 완료")
+        self.status.set(f"Pro Editor: {Path(state.source_background).name} · 원본 이미지는 수정하지 않습니다.")
 
     def set_state(self, state: ProjectState) -> None:
         self.state = state

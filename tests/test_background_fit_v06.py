@@ -84,6 +84,17 @@ class BackgroundFitTests(unittest.TestCase):
         self.assertEqual("GOOD", report["level340"]); self.assertEqual("GOOD", report["level180"])
         small = readability_report({"font_size": 30, "fill": "#FFFFFF"}, analysis)
         self.assertEqual("POOR", small["level340"]); self.assertEqual("POOR", small["level"])
+        # A tall full-figure box: text across the torso is noted but is not a face warning.
+        figure = [(500, 100, 200, 600)]
+        torso = analyze_text_region(calm_dark(), (400, 450, 500, 150), subject_boxes=figure)
+        self.assertGreater(torso.subject_overlap, 0.3)
+        self.assertEqual(0.0, torso.face_overlap)
+        torso_report = readability_report({"font_size": 100, "fill": "#FFFFFF", "outline_width": 10,
+                                           "outline_color": "#000000"}, torso)
+        self.assertFalse(torso_report["face_warning"])
+        self.assertTrue(any("몸통" in message for message in torso_report["messages"]))
+        head = analyze_text_region(calm_dark(), (450, 120, 300, 120), subject_boxes=figure)
+        self.assertTrue(readability_report({"font_size": 100}, head)["face_warning"])
         label = readability_report({"font_size": 36, "fill": "#FFFFFF"}, analysis, role="label")
         self.assertEqual("GOOD", label["level340"])
 

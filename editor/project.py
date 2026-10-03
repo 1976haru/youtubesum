@@ -205,7 +205,7 @@ def default_document(slot: str, channel: str, style_name: str, texts: dict[str, 
                             channel=channel, shape="pill", x=1040, y=22, width=210, height=60, fill=preset.outline,
                             border_color=preset.accent, border_width=3, font_size=28))
     # Generated defaults must not cover faces; the user can still move anything afterwards.
-    relayout_to_safe(document, subject_threshold=0.12, roles=("main_title",))
+    relayout_to_safe(document, subject_threshold=0.08, roles=("main_title",))
     fit_backdrop(document)
     story = document.by_role("story_label")
     obstacles = [ink_box(layer) for layer in document.ordered() if layer.type == "text"] + document.subject_boxes
@@ -405,6 +405,10 @@ def relayout_to_safe(document: ThumbnailDocument, subject_threshold: float = 0.0
         if _collision_cost(document, (best[0], best[1], bw, bh), others) < _collision_cost(document, box, others):
             layer.x += best[0] - bx
             layer.y += best[1] - by
+            if isinstance(layer, TextLayer) and not layer.rotation and (layer.x < 0 or layer.x + layer.width > width):
+                # Keep the wrap box on canvas: snug it to the glyphs (lines still fit, so nothing re-wraps).
+                ink_x, _iy, ink_w, _ih = ink_box(layer)
+                layer.x, layer.width = ink_x - 2, ink_w + 4
             moved.append(layer.id)
     return moved
 

@@ -112,6 +112,15 @@ class RegionAnalysis:
     accent_color: str
     subject_overlap: float
     readability: float
+    face_overlap: float = 0.0
+
+
+def head_region(box) -> tuple[float, float, float, float]:
+    """Face/head part of a subject box: tall full-figure boxes keep their top 35%, face boxes stay whole."""
+    x, y, w, h = box
+    if h > w * 1.6:
+        return x + w * 0.1, y, w * 0.8, h * 0.35
+    return x, y, w, h
 
 
 def _rgb(hex_color: str) -> tuple[float, float, float]:
@@ -182,12 +191,19 @@ def analyze_text_region(image_bgr: np.ndarray, rect, subject_boxes=()) -> Region
     counts = np.bincount(labels.ravel(), minlength=clusters)
     palette = tuple(_hex(centers[index]) for index in np.argsort(counts)[::-1])
     area = float((x1 - x0) * (y1 - y0))
-    overlap = 0.0
-    for sx, sy, sw, sh in _boxes(subject_boxes, w, h):
-        overlap += max(0.0, min(x1, sx + sw) - max(x0, sx)) * max(0.0, min(y1, sy + sh) - max(y0, sy)) / area
+    overlap = face = 0.0
+    for box in _boxes(subject_boxes, w, h):
+        for target, region in (("all", box), ("face", head_region(box))):
+            sx, sy, sw, sh = region
+            amount = max(0.0, min(x1, sx + sw) - max(x0, sx)) * max(0.0, min(y1, sy + sh) - max(y0, sy)) / area
+            if target == "all":
+                overlap += amount
+            else:
+                face += amount
     return RegionAnalysis(_hex(mean_bgr), float(lightness.mean()), float(lightness.std()),
                           float(np.count_nonzero(edges)) / max(1, edges.size), palette,
-                          base.dominant_color, base.accent_color, min(1.0, overlap), base.readability)
+                          base.dominant_color, base.accent_color, min(1.0, overlap), base.readability,
+                          min(1.0, face))
 
 
 LEVELS = ("GOOD", "WARNING", "POOR")
@@ -219,14 +235,16 @@ def readability_report(props: dict, analysis: RegionAnalysis, *, role: str = "ti
     title = role in ("title", "main_title")
     level340 = "GOOD" if px340 >= (12 if title else 6.5) else ("WARNING" if px340 >= (8 if title else 5) else "POOR")
     level180 = "GOOD" if px180 >= (6.5 if title else 4) else ("WARNING" if px180 >= (4.5 if title else 3) else "POOR")
-    face_warning = analysis.subject_overlap > 0.08
+    face_warning = analysis.face_overlap > 0.04
     messages = []
     if contrast_level != "GOOD":
         messages.append(f"배경 대비 부족 ({effective:.1f}:1)")
     if busy:
         messages.append("배경이 복잡함 · plate/gradient 권장")
     if face_warning:
-        messages.append(f"얼굴/피사체와 {analysis.subject_overlap:.0%} 겹침")
+        messages.append(f"얼굴과 {analysis.face_overlap:.0%} 겹침")
+    elif analysis.subject_overlap > 0.08:
+        messages.append(f"인물 몸통과 {analysis.subject_overlap:.0%} 겹침 (얼굴은 비어 있음)")
     if level340 != "GOOD":
         messages.append(f"340px에서 글자 {px340:.1f}px")
     overall = _worst(contrast_level, level340, "WARNING" if face_warning else "GOOD", level180 if title else "GOOD")
