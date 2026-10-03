@@ -21,6 +21,11 @@ class LineBreakCandidate:
     width_ratio: float
 
 
+def _is_hangul(char: str) -> bool:
+    code = ord(char)
+    return 0xAC00 <= code <= 0xD7A3 or 0x1100 <= code <= 0x11FF or 0x3130 <= code <= 0x318F
+
+
 def legal_breaks(text: str) -> tuple[int, ...]:
     """Return Unicode line-break opportunities after applying Japanese kinsoku."""
     normalized = " ".join((text or "").split())
@@ -35,6 +40,8 @@ def legal_breaks(text: str) -> tuple[int, ...]:
         before, after = normalized[point - 1], normalized[point]
         if before in NO_LINE_END or after in NO_LINE_START:
             continue
+        if _is_hangul(before) and _is_hangul(after):
+            continue  # Korean titles wrap at word spaces only (CSS word-break: keep-all)
         legal.append(point)
     legal.append(len(normalized))
     return tuple(dict.fromkeys(legal))
