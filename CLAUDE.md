@@ -5,7 +5,7 @@ Work only on `v0.6-pro-editor-dev`.
 Do not modify, merge, or push to `main`.
 
 ## Primary implementation brief
-Read `CODEX_V0.6_PRO_EDITOR_INSTRUCTIONS.md` before making changes.
+Read `CLAUDE_V0.6_PRO_EDITOR_INSTRUCTIONS.md` before making changes.
 Treat that file as the current product/acceptance specification.
 
 ## Current architecture to preserve
