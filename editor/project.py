@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,32 @@ def _px_boxes(boxes, width: int = 1280, height: int = 720) -> list[list[float]]:
             x, w, y, h = x * width, w * width, y * height, h * height
         result.append([round(x, 1), round(y, 1), round(w, 1), round(h, 1)])
     return result
+
+
+def ink_box(layer: Layer) -> tuple[float, float, float, float]:
+    """Document-space AABB of what is actually drawn; text uses its line extents, not the wrap box."""
+    if not isinstance(layer, TextLayer):
+        return aabb(layer)
+    layout = layout_text(layer)
+    widths = layout.line_widths or (0.0,)
+    if layer.alignment == "center":
+        lefts = [(layer.width - width) / 2 for width in widths]
+    elif layer.alignment == "right":
+        lefts = [layer.width - width for width in widths]
+    else:
+        lefts = [0.0 for _ in widths]
+    x0 = min(lefts); x1 = max(left + width for left, width in zip(lefts, widths))
+    y0 = (layer.height - layout.content_height) / 2; y1 = y0 + layout.content_height
+    proxy = Layer(x=layer.x + x0, y=layer.y + y0, width=max(1.0, x1 - x0), height=max(1.0, y1 - y0))
+    # Rotate about the *layer* centre, not the ink centre.
+    cx, cy = layer.center
+    pcx, pcy = proxy.center
+    angle = math.radians(layer.rotation)
+    dx, dy = pcx - cx, pcy - cy
+    proxy.x += (dx * math.cos(angle) - dy * math.sin(angle)) - dx
+    proxy.y += (dx * math.sin(angle) + dy * math.cos(angle)) - dy
+    proxy.rotation = layer.rotation
+    return aabb(proxy)
 
 
 def sync_text_height(layer: Layer, keep_center: bool = True) -> None:
@@ -181,7 +208,7 @@ def default_document(slot: str, channel: str, style_name: str, texts: dict[str, 
     relayout_to_safe(document, subject_threshold=0.12, roles=("main_title",))
     fit_backdrop(document)
     story = document.by_role("story_label")
-    obstacles = [aabb(layer) for layer in document.ordered() if layer.type == "text"] + document.subject_boxes
+    obstacles = [ink_box(layer) for layer in document.ordered() if layer.type == "text"] + document.subject_boxes
     if story is not None and any(overlap_ratio(aabb(story), box) > 0 for box in obstacles):
         for x, y in ((1280 - 30 - badge_w, 92.0), (30.0, 92.0), (30.0, title.y - badge_h - 10),
                      (1280 - 30 - badge_w, title.y - badge_h - 10)):
@@ -331,7 +358,7 @@ def find_collisions(document: ThumbnailDocument, subject_threshold: float = 0.08
     for layer in document.ordered():
         if layer.type not in ("text", "badge") or not layer.visible:
             continue
-        box = aabb(layer)
+        box = ink_box(layer)
         for subject in document.subject_boxes:
             ratio = overlap_ratio(box, subject)
             if ratio > subject_threshold:
@@ -358,11 +385,11 @@ def relayout_to_safe(document: ThumbnailDocument, subject_threshold: float = 0.0
             continue
         if roles is not None and layer.role not in roles:
             continue
-        box = aabb(layer)
+        box = ink_box(layer)
         cost = _collision_cost(document, box)
         if cost <= subject_threshold * 2:
             continue
-        others = [aabb(other) for other in document.ordered()
+        others = [ink_box(other) for other in document.ordered()
                   if other is not layer and other.visible and other.type in ("text", "badge")
                   and other.role not in ("story_label",)]
         bx, by, bw, bh = box

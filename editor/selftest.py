@@ -72,6 +72,8 @@ def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path
         state = editor.state
         check("project_load_abc", set(state.documents) == {"A", "B", "C"} and editor.frame_bgr is not None,
               {"channel": state.channel, "style": state.style})
+        # Destructive manipulation checks run on candidate C; A is kept for a realistic capture.
+        editor.select_slot("C"); _pump(app)
         document = editor.document
         title = document.by_role("main_title")
         editor.select_layer(None); _pump(app)
@@ -159,6 +161,23 @@ def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path
               report and {k: report[k] for k in ("level", "contrast", "px340", "px180")})
         check("preview_340_180", bool(editor.preview_340.cget("image")) and bool(editor.preview_180.cget("image")))
 
+        # Realistic workflow on candidate A: pick a proper display font, then 배경에 맞춤.
+        editor.select_slot("A"); _pump(app)
+        a_layer = editor.document.by_role("main_title")
+        editor.select_layer(a_layer.id); _pump(app)
+        names = {family.name for family in browser.catalog}
+        hangul = any("가" <= char <= "힣" for char in a_layer.text)
+        choices = ("Malgun Gothic", "Noto Sans KR") if hangul else ("Yu Gothic", "Meiryo", "BIZ UDPGothic")
+        family = next((name for name in choices if name in names), "")
+        if family:
+            editor.apply_font(family); _pump(app)
+        editor.apply_background_fit("fit"); _pump(app, 0.3)
+        editor.update_meter(); _pump(app)
+        details["capture_state"] = {"font": family, "report": getattr(editor, "last_report", None)}
+        if capture:
+            capture_window(app, capture)
+            details["capture"] = str(capture)
+
         # Candidate independence.
         a_title = editor.document.by_role("main_title").to_dict()
         editor.select_slot("B"); _pump(app)
@@ -166,10 +185,6 @@ def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path
         editor.set_property("font_size", b_title.font_size - 10, b_title); _pump(app)
         editor.select_slot("A"); _pump(app)
         check("abc_independent", editor.document.by_role("main_title").to_dict() == a_title)
-
-        if capture:
-            capture_window(app, capture)
-            details["capture"] = str(capture)
 
         # Save / reopen on a Korean/Japanese/space path.
         editor._flush_edit()

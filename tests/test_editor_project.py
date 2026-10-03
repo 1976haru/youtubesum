@@ -8,9 +8,9 @@ import cv2
 import numpy as np
 
 from editor.document import ShapeLayer, TextLayer
-from editor.project import (SLOTS, copy_layer_to, copy_typography_layout, export_candidate, find_collisions,
+from editor.project import (SLOTS, copy_layer_to, copy_typography_layout, export_candidate, find_collisions, ink_box,
                             generate_project, load_project, propagate_shared, relayout_to_safe, replace_backgrounds,
-                            reset_candidate, save_project)
+                            reset_candidate, save_project, sync_text_height)
 from typography.layer_renderer import LayerRenderer, layout_text
 from typography.linebreak_engine import legal_breaks
 
@@ -69,6 +69,19 @@ class ProjectTests(unittest.TestCase):
                          [old_pop.documents[slot].candidate_type for slot in SLOTS])
         for line in layout_text(old_pop.documents["A"].by_role("main_title")).lines:
             self.assertFalse(line.startswith(("시", "난", "날")) and len(line) == 1)
+
+    def test_ink_box_tracks_glyph_extents_not_the_wrap_box(self):
+        layer = TextLayer(text="短い", x=100, y=100, width=800, height=120, font_size=80, alignment="left")
+        sync_text_height(layer)
+        x, y, w, h = ink_box(layer)
+        self.assertAlmostEqual(100, x, delta=1)
+        self.assertLess(w, 260)
+        layer.alignment = "right"
+        self.assertAlmostEqual(900, ink_box(layer)[0] + ink_box(layer)[2], delta=1)
+        layer.rotation = 90
+        rx, ry, rw, rh = ink_box(layer)
+        self.assertLess(rw, rh)  # rotated about the layer centre
+        self.assertGreater(ry, layer.y - 400)
 
     def test_korean_titles_break_only_between_words(self):
         text = "첫눈에 다시 만난 날"

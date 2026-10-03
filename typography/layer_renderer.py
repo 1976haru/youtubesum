@@ -115,9 +115,14 @@ def _layout_cached(text, channel, family, weight, size, spacing, line_spacing, w
         lines = tuple(" ".join(line.split()) for line in text.splitlines() if line.strip()) or ("",)
     else:
         normalized = " ".join(text.split())
-        choices = score_line_breaks(normalized, lambda line: _line_width(spec, line),
-                                    max(1.0, width), max(1, int(max_lines)))
+        measure = lambda line: _line_width(spec, line)
+        choices = score_line_breaks(normalized, measure, max(1.0, width), max(1, int(max_lines)))
         lines = choices[0].lines
+        # The shared scorer never proposes a single line; a title that fits on one line keeps it
+        # unless a multi-line split scores clearly better (same weights as the scorer).
+        single_ratio = measure(normalized) / max(1.0, width)
+        if single_ratio <= 1.0 and single_ratio * single_ratio * 0.8 <= choices[0].score:
+            lines = (normalized,)
     widths = tuple(_line_width(spec, line) for line in lines)
     step = size * line_spacing
     families: set[str] = set()

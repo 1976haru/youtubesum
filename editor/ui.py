@@ -28,7 +28,7 @@ from .fonts import EditorSettings, build_catalog, family_faces, missing_glyphs, 
 from .io_utils import read_image
 from .project import (CHANNEL_PALETTES, PROJECT_FILENAME, SLOT_LABELS, SLOTS, TEXT_EFFECTS, ProjectState,
                       copy_layer_to, copy_typography_layout, default_document, export_candidate, generate_project,
-                      load_project, preset_text_props, propagate_shared, relayout_to_safe, replace_backgrounds,
+                      ink_box, load_project, preset_text_props, propagate_shared, relayout_to_safe, replace_backgrounds,
                       reset_candidate, save_project, sync_text_height)
 from .widgets import ColorField, FontBrowser, NumberField, ScrollableFrame
 
@@ -641,6 +641,9 @@ class ProEditor(ttk.Frame):
             canvas.create_text(x, y, anchor="nw", text="재생시간", fill="#ff6b6b", font=("Segoe UI", 8), tags=("overlay",))
             for zone in document.safe_zones:
                 rect(zone, outline="#ff3d6e", dash=(6, 3), width=2)
+                x, y = view.to_view(zone[0] + 4, zone[1] + 4)
+                canvas.create_text(x, y, anchor="nw", text="텍스트 회피 영역", fill="#ff3d6e", font=("Segoe UI", 8),
+                                   tags=("overlay",))
         if self.show_subjects.get():
             for box in document.subject_boxes:
                 rect(box, outline="#ffa94d", dash=(3, 3), width=2)
@@ -1404,7 +1407,7 @@ class ProEditor(ttk.Frame):
     def _analysis_for(self, layer: Layer):
         document = self.document
         backdrop = self.renderer.render(document, self.state.images, skip_ids={layer.id})
-        return analyze_text_region(backdrop, geo.aabb(layer), document.subject_boxes)
+        return analyze_text_region(backdrop, ink_box(layer), document.subject_boxes)
 
     def update_meter(self) -> dict | None:
         self._meter_job = None

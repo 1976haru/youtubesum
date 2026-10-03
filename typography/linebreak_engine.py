@@ -77,6 +77,9 @@ def _break_penalty(text: str, point: int) -> float:
 def _partitions(text: str, line_count: int):
     points = legal_breaks(text)
     if line_count == 1:
+        # NOTE: inside a generator this yields nothing, so the legacy scorer never offers a
+        # single line; the v0.4 Japanese snapshot depends on that, so it is kept as-is here
+        # and the v0.6 layer layout adds the one-line candidate itself.
         return [(text,)]
 
     def walk(start: int, remaining: int, lines: tuple[str, ...]):
