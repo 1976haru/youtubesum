@@ -51,6 +51,20 @@ class CandidateValidation(unittest.TestCase):
     def test_korean_japanese_space_paths(self):
         self.run_case("한글 입력 東京 space", "결과 保存 폴더")
 
+    def test_face_cascade_loads_from_korean_japanese_install_path(self):
+        import shutil
+        import thumbnail_engine
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw:
+            folder = Path(raw) / "설치 경로 インストール space"
+            folder.mkdir()
+            shutil.copy(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml", folder)
+            thumbnail_engine._face_cascade.cache_clear()
+            try:
+                with patch.object(cv2.data, "haarcascades", str(folder) + "\\"):
+                    self.assertFalse(thumbnail_engine._face_cascade().empty())
+            finally:
+                thumbnail_engine._face_cascade.cache_clear()
+
     def test_motion_korean_japanese_path(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw:
             root = Path(raw) / "모션 東京 space"; root.mkdir()

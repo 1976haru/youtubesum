@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -59,17 +61,35 @@ def _write_image(path, image, jpeg_quality=95):
     return path
 
 
+_CASCADE_LOCK = threading.Lock()
+
+
+@lru_cache(maxsize=1)
+def _face_cascade():
+    """Load the Haar cascade from memory: cv2 cannot open files under Korean/Japanese install paths."""
+    cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier()
+    try:
+        storage = cv2.FileStorage(cascade_path.read_text(encoding="utf-8"),
+                                  cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
+        if cascade.read(storage.getFirstTopLevelNode()) and not cascade.empty():
+            return cascade
+    except (OSError, cv2.error):
+        pass
+    return cv2.CascadeClassifier(str(cascade_path))
+
+
 def _detect_faces(image):
     """Conservative local face detection. Any failure falls back safely."""
     try:
-        cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
-        cascade = cv2.CascadeClassifier(str(cascade_path))
+        cascade = _face_cascade()
         if cascade.empty():
             return []
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         scale = min(1.0, 1200 / max(gray.shape))
         small = cv2.resize(gray, None, fx=scale, fy=scale) if scale < 1 else gray
-        boxes = cascade.detectMultiScale(small, scaleFactor=1.1, minNeighbors=6, minSize=(36, 36))
+        with _CASCADE_LOCK:
+            boxes = cascade.detectMultiScale(small, scaleFactor=1.1, minNeighbors=6, minSize=(36, 36))
         result = []
         for x, y, w, h in boxes:
             box = tuple(int(round(value / scale)) for value in (x, y, w, h))
