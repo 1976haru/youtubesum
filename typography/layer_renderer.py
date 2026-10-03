@@ -245,20 +245,20 @@ def _rasterize_text(layer, supersample: int) -> _Raster:
     silhouette = outer_mask if outer_mask is not None else (outline_mask if outline_mask is not None else
                  np.maximum(plain_fill, highlight_fill) if highlight_fill is not None else plain_fill)
 
-    out = np.zeros((height_px, width_px, 4), np.float32)  # premultiplied BGRA, 0..1
+    # Premultiplied B, G, R, A planes in 0..1; per-plane cv2 ops are SIMD and allocation-light.
+    planes = [np.zeros((height_px, width_px), np.float32) for _ in range(4)]
 
     def over(coverage: np.ndarray, rgb: tuple[float, float, float] | np.ndarray, alpha: float = 1.0):
-        # cv2 float ops are SIMD/multithreaded; plain numpy broadcasting was ~5x slower here.
         a = coverage if alpha >= 1.0 else cv2.multiply(coverage, alpha)
-        a4 = cv2.merge((a, a, a, a))
-        if isinstance(rgb, np.ndarray):
-            paint = np.empty((height_px, width_px, 4), np.float32)
-            paint[:, :, :3] = rgb
-            paint[:, :, 3] = 1.0
-            source = cv2.multiply(a4, paint)
-        else:
-            source = cv2.multiply(a4, (rgb[0], rgb[1], rgb[2], 1.0))
-        cv2.add(source, cv2.multiply(out, cv2.subtract((1.0, 1.0, 1.0, 1.0), a4)), dst=out)
+        inverse = cv2.subtract(1.0, a)
+        for index in range(4):
+            cv2.multiply(planes[index], inverse, dst=planes[index])
+            if index == 3:
+                cv2.add(planes[index], a, dst=planes[index])
+            elif isinstance(rgb, np.ndarray):  # per-row gradient colours, shape (rows, 1, 3)
+                cv2.add(planes[index], a * rgb[:, :, index], dst=planes[index])
+            elif rgb[index] > 0:
+                cv2.scaleAdd(a, float(rgb[index]), planes[index], dst=planes[index])
 
     def bgr(value: str) -> tuple[float, float, float]:
         b, g, r, _a = _bgra(value)
@@ -296,7 +296,7 @@ def _rasterize_text(layer, supersample: int) -> _Raster:
         over(plain_fill, bgr(layer.fill))
     if highlight_fill is not None:
         over(highlight_fill, bgr(layer.highlight_color))
-    pixels = np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    pixels = cv2.convertScaleAbs(cv2.merge(planes), alpha=255.0)
     return _Raster(pixels, left, top_e)
 
 
@@ -608,15 +608,46 @@ class LayerRenderer:
         if warped_tint is not None:
             _blend_into(canvas, warped_tint, tx, ty, float(layer.opacity))
 
+    def _signature(self, layers, images, background_color: str) -> tuple:
+        parts = [background_color]
+        for layer in layers:
+            if layer.type in ("background", "image"):
+                array = self.source_array(layer.source, images)
+                content = (layer.source, getattr(layer, "fit", ""),
+                           None if array is None else (array.shape, array.__array_interface__["data"][0]))
+            else:
+                content = self.raster_key(layer)
+            parts.append((layer.id, content, layer.visible, layer.x, layer.y, layer.width, layer.height,
+                          layer.rotation, layer.opacity))
+        return tuple(parts)
+
     def render(self, document, images: Mapping[str, np.ndarray] | None = None, *,
-               skip_ids=(), background_color: str = "#101114") -> np.ndarray:
-        """Render visible layers at document size; returns BGR uint8 (identical for preview/export)."""
+               skip_ids=(), background_color: str = "#101114", split_at: str | None = None) -> np.ndarray:
+        """Render visible layers at document size; returns BGR uint8 (identical for preview/export).
+
+        ``split_at`` (the layer being edited) reuses a cached composite of every layer below it,
+        which is pixel-identical to compositing them again.
+        """
         images = images or {}
         size = (int(document.canvas_width), int(document.canvas_height))
+        ordered = document.ordered()
+        index = next((i for i, layer in enumerate(ordered) if layer.id == split_at), None) if split_at else None
+        if index and not skip_ids:
+            below = ordered[:index]
+            signature = self._signature(below, images, background_color) + (size,)
+            if getattr(self, "_below_signature", None) != signature:
+                self._below_canvas = self.render(_LayerView(document, below), images,
+                                                 background_color=background_color)
+                self._below_signature = signature
+            canvas = self._below_canvas.copy()
+            return self._composite(canvas, ordered[index:], images, size, skip_ids)
         b, g, r, _a = _bgra(background_color)
         canvas = np.empty((size[1], size[0], 3), np.uint8)
         canvas[:] = (b, g, r)
-        for layer in document.ordered():
+        return self._composite(canvas, ordered, images, size, skip_ids)
+
+    def _composite(self, canvas: np.ndarray, layers, images, size, skip_ids) -> np.ndarray:
+        for layer in layers:
             if not layer.visible or layer.id in skip_ids or layer.opacity <= 0:
                 continue
             if layer.type == "overlay" and layer.kind == "blur_plate":
@@ -638,6 +669,17 @@ class LayerRenderer:
             if patch is not None:
                 _blend_into(canvas, patch, x, y, max(0.0, min(1.0, float(layer.opacity))))
         return canvas
+
+
+class _LayerView:
+    """Document stand-in exposing a subset of layers (used for the below-selection cache)."""
+
+    def __init__(self, document, layers):
+        self.canvas_width, self.canvas_height = document.canvas_width, document.canvas_height
+        self._layers = list(layers)
+
+    def ordered(self):
+        return list(self._layers)
 
 
 def downscale(image_bgr: np.ndarray, width: int) -> np.ndarray:

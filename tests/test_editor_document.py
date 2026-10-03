@@ -141,6 +141,23 @@ class LayerRendererTests(unittest.TestCase):
         self.assertEqual((191, 340, 3), downscale(editor_frame, 340).shape)
         self.assertEqual((101, 180, 3), downscale(editor_frame, 180).shape)
 
+    def test_below_selection_cache_is_pixel_identical(self):
+        renderer = LayerRenderer()
+        document = sample_document(); images = {"asset://bg": background()}
+        title = document.by_role("main_title")
+        document.add(OverlayLayer(kind="blur_plate", x=600, y=60, width=300, height=120))
+        for step in range(3):
+            title.x += 7; title.font_size += 2
+            cached = renderer.render(document, images, split_at=title.id)
+            np.testing.assert_array_equal(LayerRenderer().render(document, images), cached)
+        document.by_role("episode_badge").text = "EP.200"
+        np.testing.assert_array_equal(LayerRenderer().render(document, images),
+                                      renderer.render(document, images, split_at=title.id))
+        gradient = next(layer for layer in document.layers if layer.type == "overlay")
+        gradient.strength = 0.2  # a change below the split invalidates the cache
+        np.testing.assert_array_equal(LayerRenderer().render(document, images),
+                                      renderer.render(document, images, split_at=title.id))
+
     def test_live_property_update_is_interactive(self):
         renderer = LayerRenderer()
         document = sample_document(); images = {"asset://bg": background()}
@@ -149,12 +166,12 @@ class LayerRendererTests(unittest.TestCase):
         timings = []
         for size in (94, 96, 98, 100):
             title.font_size = size
-            start = time.perf_counter(); renderer.render(document, images)
+            start = time.perf_counter(); renderer.render(document, images, split_at=title.id)
             timings.append((time.perf_counter() - start) * 1000)
         drag = []
         for step in range(5):
             title.x += 3
-            start = time.perf_counter(); renderer.render(document, images)
+            start = time.perf_counter(); renderer.render(document, images, split_at=title.id)
             drag.append((time.perf_counter() - start) * 1000)
         # Generous CI bound; measured ~60-100 ms for property edits and ~25 ms for drags.
         self.assertLess(sorted(timings)[len(timings) // 2], 400)
