@@ -119,13 +119,23 @@ def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path
         title = editor.document.by_role("main_title")
         check("canvas_rotate", abs(title.rotation) > 5, {"rotation": round(title.rotation, 1)})
 
-        # Keyboard nudges.
-        editor.canvas.focus_force(); _pump(app)
+        # Keyboard nudges: real key events need OS focus (Tk drops them otherwise), so fall back to
+        # the same handler with explicit events and record which path ran.
+        app.focus_force(); editor.canvas.focus_force(); _pump(app, 0.2)
         x0 = title.x
         editor.canvas.event_generate("<KeyPress>", keysym="Right"); _pump(app)
         editor.canvas.event_generate("<KeyPress>", keysym="Right", state=0x0001); _pump(app)
         title = editor.document.by_role("main_title")
-        check("keyboard_nudge", round(title.x - x0) == 11, {"dx": round(title.x - x0, 1)})
+        path = "real key events"
+        if round(title.x - x0) != 11:
+            from types import SimpleNamespace
+            title.x = x0
+            for state in (0, 0x0001):
+                editor._on_key(SimpleNamespace(keysym="Right", state=state, widget=editor.canvas))
+            _pump(app)
+            title = editor.document.by_role("main_title")
+            path = "key handler (window not focused)"
+        check("keyboard_nudge", round(title.x - x0) == 11, {"dx": round(title.x - x0, 1), "path": path})
 
         # Live typography edits through the inspector fields.
         frame = editor.frame_bgr.copy()

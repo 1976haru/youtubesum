@@ -53,10 +53,13 @@ class ProEditorFeatureTests(unittest.TestCase):
         if self.editor._render_job is not None:
             self.editor.render_now()
 
-    def key(self, keysym, state=0):
-        self.editor.canvas.focus_force(); self.app.update()
-        self.editor.canvas.event_generate("<KeyPress>", keysym=keysym, state=state)
+    def key(self, keysym, state=0, widget=None):
+        # Tk delivers synthesized key events to the OS-focused widget only, so drive the editor's
+        # key handler directly with an explicit source widget (deterministic without desktop focus).
+        event = SimpleNamespace(keysym=keysym, state=state, widget=widget or self.editor.canvas)
+        result = self.editor._on_key(event)
         self.pump()
+        return result
 
     def test_layer_panel_visibility_lock_rename_reorder_duplicate_delete(self):
         editor = self.editor
@@ -90,6 +93,10 @@ class ProEditorFeatureTests(unittest.TestCase):
         self.key("z", state=0x0004)  # Ctrl+Z restores the deleted duplicate
         self.assertEqual(count + 1, len(editor.document.layers))
         self.key("y", state=0x0004)  # Ctrl+Y deletes it again
+        self.assertEqual(count, len(editor.document.layers))
+        editor.select_layer(subtitle.id)
+        self.assertIsNone(self.key("Delete", widget=editor._text_widget))  # typing in the text box
+        self.assertIsNone(self.key("d", state=0x0004, widget=editor._text_widget))
         self.assertEqual(count, len(editor.document.layers))
 
     def test_overlays_effects_palettes_styles_and_channel_preset(self):

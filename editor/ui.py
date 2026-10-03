@@ -805,8 +805,13 @@ class ProEditor(ttk.Frame):
     def _on_key(self, event) -> str | None:
         if not self.winfo_ismapped() or self.document is None:
             return None
-        focus = self.focus_get()
-        typing = focus is not None and focus.winfo_class() in TEXTUAL_FOCUS
+        # Decide from the widget that received the key (not global OS focus): typing in an entry,
+        # spinbox or the text box must not trigger nudges/deletes.
+        widget = event.widget
+        try:
+            typing = widget.winfo_class() in TEXTUAL_FOCUS
+        except (AttributeError, tk.TclError):
+            typing = False
         ctrl = bool(event.state & 0x0004)
         key = event.keysym.lower()
         if ctrl and key == "s":
