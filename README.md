@@ -1,4 +1,39 @@
-# YouTube Dynamic Thumbnail Studio v0.5.1-dev
+# YouTube Dynamic Thumbnail Studio v0.6.0-dev
+
+## v0.6 Pro Editor (default tab)
+
+v0.6 turns the A/B/C generator into a layer-based, WYSIWYG thumbnail editor. The **★ Pro Editor** tab opens first; the previous tabs (3후보 미리보기, Live Composer, Motion Intro, 테스트 기록) are unchanged.
+
+**Three panes**
+- **Left — templates/styles/assets:** channel presets (Tokyo Chill · cinematic/urban, OLD POP LOUNGE · calm/large), the 12 typography presets as cards that preview the *current title* (Tokyo Chill and OLD POP grouped separately; right-click = ★ favorite, plus a Recent/Favorites row), one-click text effect cards, colour palettes (channel palettes, `palette.json`, colours extracted from a reference image), background tools, Image Bridge actions and the reference-thumbnail panel.
+- **Centre — canvas:** dark editor background, 16:9 canvas at 25/50/75/100%/Fit (Ctrl+wheel zoom, middle-drag pan), direct click-select, drag, 8 resize handles (corners scale proportionally and scale the type; sides re-wrap), a rotation handle (Shift = 15° steps), snapping guides (canvas centre, safe margins, other layers' edges/centres; Alt disables), and overlays for safe area + YouTube timestamp, rule of thirds, centre lines, text-avoid zones and subject/face boxes. Below the canvas: true 340 px and 180 px previews and a GOOD/WARNING/POOR readability meter.
+- **Right — layers + inspector:** layer list with visibility, lock, rename (double-click), reorder, duplicate, delete; a context inspector for text, badge, shape, overlay and image layers; a **font browser** tab; and a **배경 맞춤** tab.
+
+**Layer model.** `editor/document.py` defines `ThumbnailDocument` with background, image, text, badge, shape and overlay layers (common transform fields plus full typography: family/weight/size, fill + gradient, outline and second outline, shadow x/y/blur/opacity, glow, letter/line spacing, alignment, highlight word/colour/scale, max lines, manual breaks). The existing A/B/C generator output is converted into these documents, so every candidate starts from the generated layout and stays fully editable.
+
+**Live editing.** Every inspector control updates the selected layer immediately — no Generate button and no AI call. Glyphs are shaped by HarfBuzz and rasterized by Skia into cached patches, then composited with OpenCV; the editor canvas, the 340/180 previews and PNG export all call the same `LayerRenderer.render`, so the preview is the export. Measured on the validation machine (i9-12900, real Tk events, edit → frame on screen): font-size slider median 29–53 ms (max 105 ms), canvas drag median 26–30 ms. Fonts are scanned once on a background thread and cached; HarfBuzz shaping is cached per text run and scaled per size.
+
+**Font browser.** Lists installed families (no fonts are bundled or downloaded) with Japanese/Korean/Latin/All filters, search, Display/Bold-first ordering, ★ favorites and recent fonts, and renders the current title in each family. The text inspector warns when the chosen family lacks glyphs and a fallback font will be used.
+
+**배경 맞춤.** Analyses the area under the selected text (luminance, local contrast, 5-colour palette, edge density, face vs. torso overlap) and offers **배경에 맞춤 / 더 강하게 / 더 부드럽게 / 대비만 보정**. Suggestions keep channel identity (Tokyo Chill: white ink, tinted deep outline, restrained neon glow, cinematic gradient; OLD POP: warm cream ink, thicker outline, almost no glow, soft plate), prefer the project `palette.json`, and add a separate editable plate/gradient layer only when the background needs it.
+
+**Plates and overlays** are independent layers: soft black/white gradient, rounded translucent plate, coloured label strip, vignette and local blur plate, each with opacity, size, direction, blur/feather and corner radius.
+
+**A/B/C documents.** Each candidate keeps its own document and undo history. Copy the selected layer or the whole typography layout to the other candidates, reset a candidate to its generated default, and lock shared EP/channel labels across candidates.
+
+**Image Bridge in the editor.** 배경 생성 / 배경 편집 / image에서 새로고침 run off the GUI thread, re-read `subject_boxes.json`, `safe_zones.json`, `palette.json` and `composition.json`, and replace **only** the background layers. If the new background collides with the title/labels you choose **현재 배치 유지** or **새 안전영역에 맞춰 재배치**.
+
+**Reference thumbnail.** Shows your own reference next to the editor, can extract colours only, or overlay it as an editor-only ghost guide (never exported, never auto-copied).
+
+**Project files.** Ctrl+S writes `thumbnail_project.json` (document version, A/B/C layer documents and generated defaults, source background, bridge metadata, palette, protagonist/counterpart points, selected candidate/layers, zoom, app version) plus content-addressed background PNGs in `thumbnail_project_assets/`. Writes are atomic, source images are never modified, and Korean/Japanese/space-containing paths work. Optional autosave (every 60 s) uses the same atomic writer.
+
+**Shortcuts:** arrows = 1 px, Shift+arrows = 10 px, Delete, Ctrl+D duplicate, Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) undo/redo, Ctrl+S save, double-click a text layer to edit its text.
+
+**Line breaking.** Korean titles now wrap only at spaces (keep-all), Japanese breaks keep okurigana with the kanji stem (終電を逃した / 夜、僕は), and the editor offers one-line layouts for short titles. The v0.4 20-title Japanese snapshot is unchanged.
+
+**Validation.** `py -3.10 scripts\v06_validation.py` runs four scenarios (Tokyo two-person relationship, Tokyo one-person male story, OLD POP couple, OLD POP scenery) through the real GUI and writes window captures, 1280×720/340/180 exports, before (v0.5.1 renderer) / after sheets, readability and latency to `build\v06_validation\`. `YouTubeDynamicThumbnailStudio.exe --self-test-editor <project folder> [--capture out.png] [--report report.json]` drives the packaged GUI with real mouse/keyboard events (select, drag, resize, rotate, nudge, undo/redo, live typography, font browser, background fit, A/B/C independence, save/reopen on a Korean/Japanese path, export, bridge refresh) and exits non-zero on failure.
+
+---
 
 v0.4 replaces Pillow text painting with a vector typography pipeline: Skia raster/vector drawing, HarfBuzz glyph shaping, fontTools installed-font inspection, and uniseg Unicode line-breaking. Pillow remains only for Tk preview conversion and non-text image compatibility; thumbnail titles and badges are rendered as vector glyphs/SVG.
 
@@ -60,7 +95,7 @@ Use Windows x64 and Python 3.10. Install the pinned dependencies and prepare the
 ```bat
 py -3.10 -m pip install -r requirements-build.txt
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\prepare_ffmpeg.ps1
-py -3.10 -m PyInstaller --noconfirm --clean --workpath build\pyinstaller_v051 --distpath dist YouTubeDynamicThumbnailStudio.spec
+py -3.10 -m PyInstaller --noconfirm --clean --workpath build\pyinstaller_v06 --distpath dist YouTubeDynamicThumbnailStudio.spec
 ```
 
 The executable is `dist\YouTubeDynamicThumbnailStudio\YouTubeDynamicThumbnailStudio.exe` (keep the adjacent `_internal` folder when distributing). This folder-based build avoids one-file extraction delays and can be launched by double-clicking the EXE. No fonts or external FFmpeg executable are bundled/required; fonts come from Windows. Review `THIRD_PARTY_NOTICES.txt` before redistributing the FFmpeg-enabled build.
@@ -68,7 +103,7 @@ The executable is `dist\YouTubeDynamicThumbnailStudio\YouTubeDynamicThumbnailStu
 ## Tests and real-image comparison
 
 ```bat
-py -3.10 -m compileall -q app.py image_bridge.py thumbnail_engine.py layout_engine.py typography_engine.py typography
+py -3.10 -m compileall -q app.py image_bridge.py thumbnail_engine.py layout_engine.py typography_engine.py typography editor
 py -3.10 -m unittest discover -s tests -v
 py -3.10 scripts\compare_tokyo_samples.py sample-1.png sample-2.png sample-3.png
 dist\YouTubeDynamicThumbnailStudio\YouTubeDynamicThumbnailStudio.exe --self-test-project examples\tokyo_chill_project
