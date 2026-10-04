@@ -421,9 +421,11 @@ def _launch(action: str, project_dir: str | Path | None, *, prompt: str = "", ed
         root = _resolve_project_dir(project_dir)
     except (OSError, ValueError) as exc:
         return LaunchResult(False, str(exc), action=action)
-    configured = executable or os.environ.get("IMAGE_PROGRAM_EXE", "")
+    from image_program import resolve_mode, resolve_program
+    configured = executable or resolve_program()[0]
     if not configured:
-        return LaunchResult(False, "IMAGE_PROGRAM_EXE is not configured.", action=action, project_dir=root)
+        return LaunchResult(False, "Image program is not configured. Choose it with '이미지 프로그램 설정…' "
+                            "(or set IMAGE_PROGRAM_EXE).", action=action, project_dir=root)
     program = Path(configured).expanduser()
     if not program.is_absolute():
         program = (Path.cwd() / program).resolve()
@@ -431,7 +433,7 @@ def _launch(action: str, project_dir: str | Path | None, *, prompt: str = "", ed
         return LaunchResult(False, f"Image program executable was not found: {program}", action=action, project_dir=root)
     try:
         request = _request(action, root, prompt, edit_request, options)
-        mode = os.environ.get("IMAGE_BRIDGE_MODE", "cli").strip().casefold()
+        mode = resolve_mode()
         args, input_text = _command(program, mode, request)
     except (OSError, TypeError, ValueError) as exc:
         return LaunchResult(False, str(exc), action=action, project_dir=root)

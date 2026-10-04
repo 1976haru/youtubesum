@@ -19,6 +19,9 @@ from . import geometry as geo
 from .document import TextLayer
 
 
+bridge_keep_dir: str | None = None   # where the bridge end-to-end project/exports are kept (else a temp folder)
+
+
 def _pump(app, seconds: float = 0.0) -> None:
     end = time.perf_counter() + seconds
     while True:
@@ -58,7 +61,7 @@ def _drag(app, editor, start_doc, end_doc, steps: int = 6, state: int = 0) -> No
 
 def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path | None = None,
                          workdir: str | Path | None = None, fonts_timeout: float = 45.0,
-                         bridge_generate: bool = False) -> dict:
+                         bridge_generate: bool = False, bridge_prompt: str | None = None) -> dict:
     editor = app.pro_editor
     app.notebook.select(editor)
     app.deiconify()
@@ -228,22 +231,58 @@ def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path
                        for slot, doc in editor.state.documents.items()}
         check("bridge_refresh_preserves_layers", texts_before == texts_after)
         if bridge_generate:
-            # Real subprocess through the Image Bridge launcher (IMAGE_PROGRAM_EXE must be configured).
+            # Real subprocess through the Image Bridge launcher; the program comes from image_program.resolve_program
+            # (env var, the saved setting, or CoverMorph auto-discovery).
+            from image_program import resolve_program
+            program, source = resolve_program()
+            details["image_program"] = {"path": program, "source": source}
             editor._ask_relayout = lambda _collisions: "keep"
             before_bg = editor.state.background_image("A").copy()
             layers_before = {slot: [layer.to_dict() for layer in doc.ordered() if layer.type != "background"]
                              for slot, doc in editor.state.documents.items()}
-            editor.image_prompt.set("rainy Tokyo station at night, 東京")
+            editor.image_prompt.set(bridge_prompt or "rainy Tokyo station at night, 東京")
+            started = time.perf_counter()
             editor.bridge_generate()
-            deadline = time.perf_counter() + 180
+            deadline = time.perf_counter() + 900
             while (editor._bridge_running or not editor._bridge_queue.empty()) and time.perf_counter() < deadline:
                 _pump(app, 0.1)
             _pump(app, 0.3)
             layers_after = {slot: [layer.to_dict() for layer in doc.ordered() if layer.type != "background"]
                             for slot, doc in editor.state.documents.items()}
             changed_bg = not np.array_equal(before_bg, editor.state.background_image("A"))
-            check("bridge_generate_subprocess", changed_bg and layers_before == layers_after,
-                  {"status": editor.bridge_status.get()[:160], "message": editor.message.get()[:160]})
+            check("bridge_generate_subprocess", changed_bg,
+                  {"status": editor.bridge_status.get()[:160], "message": editor.message.get()[:160],
+                   "seconds": round(time.perf_counter() - started, 1)})
+            check("bridge_layers_kept", layers_before == layers_after,
+                  {"layers": {slot: [layer.get("role") or layer.get("type") for layer in items]
+                              for slot, items in layers_after.items()}})
+            folder_now = Path(editor.state.bridge.get("folder") or "")
+            check("bridge_sidecars_loaded", all((folder_now / name).is_file() for name in
+                  ("canvas_clean.png", "subject_boxes.json", "safe_zones.json", "palette.json", "composition.json",
+                   "project_manifest.json")) and bool(editor.state.bridge.get("status", {}).get("clean_canvas")),
+                  {"status": editor.state.bridge.get("status")})
+            # Move the title a little (user repositioning), then save / reopen / export 1280x720.
+            editor.select_slot("A"); _pump(app)
+            title = editor.document.by_role("main_title")
+            editor.set_property("x", title.x - 20, title); _pump(app)
+            editor._flush_edit()
+            e2e_project = (Path(bridge_keep_dir) if bridge_keep_dir else root) / "thumbnail_project.json"
+            e2e_project.parent.mkdir(parents=True, exist_ok=True)
+            saved_docs = {slot: doc.to_dict() for slot, doc in editor.state.documents.items()}
+            saved_bg = editor.state.background_image("A").copy()
+            editor._save_to(e2e_project)
+            editor.open_project_file(str(e2e_project)); _pump(app)
+            reopened_docs = {slot: doc.to_dict() for slot, doc in editor.state.documents.items()}
+            check("bridge_project_reopen", reopened_docs == saved_docs and
+                  np.array_equal(saved_bg, editor.state.background_image("A")) and
+                  editor.state.bridge.get("folder") == str(folder_now), {"path": str(e2e_project)})
+            exported = editor.export_all(str(e2e_project.parent / "export_1280x720"))
+            sizes = []
+            for path in exported:
+                decoded = cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_COLOR)
+                sizes.append(None if decoded is None else [int(decoded.shape[1]), int(decoded.shape[0])])
+            check("bridge_export_1280x720", len(exported) == 3 and all(size == [1280, 720] for size in sizes),
+                  {"files": [str(p) for p in exported], "sizes": sizes})
         details["timings"] = editor.timing_summary()
     except Exception:
         results["exception"] = "FAIL"
@@ -268,7 +307,8 @@ def capture_window(app, path: str | Path) -> Path:
     return path
 
 
-def main_self_test(app, folder: str, capture: str | None, report: str | None, bridge_generate: bool = False) -> int:
+def main_self_test(app, folder: str, capture: str | None, report: str | None, bridge_generate: bool = False,
+                   bridge_prompt: str | None = None, keep_dir: str | None = None) -> int:
     if bridge_generate:
         # The bridge writes into the project folder; work on a copy so the source stays untouched.
         import shutil
@@ -276,7 +316,10 @@ def main_self_test(app, folder: str, capture: str | None, report: str | None, br
         copy = scratch / "브리지 프로젝트 東京"
         shutil.copytree(folder, copy)
         folder = str(copy)
-    outcome = run_editor_self_test(app, folder, capture=capture, bridge_generate=bridge_generate)
+    global bridge_keep_dir
+    bridge_keep_dir = keep_dir
+    outcome = run_editor_self_test(app, folder, capture=capture, bridge_generate=bridge_generate,
+                                   bridge_prompt=bridge_prompt)
     text = json.dumps(outcome, ensure_ascii=False, indent=2)
     if report:
         Path(report).write_text(text, encoding="utf-8")

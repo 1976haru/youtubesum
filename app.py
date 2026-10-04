@@ -118,11 +118,12 @@ class App(tk.Tk):
         self.image_project: ImageProject | None = None
         self.image_project_path = tk.StringVar(value="No image project open")
         self.image_bridge_status = tk.StringVar(value="clean canvas — · safe zones — · subject boxes — · palette — · manifest —")
-        configured_image_exe = os.environ.get("IMAGE_PROGRAM_EXE", "")
-        bridge_mode = os.environ.get("IMAGE_BRIDGE_MODE", "cli")
+        from image_program import resolve_mode, resolve_program
+        configured_image_exe = resolve_program()[0]
+        bridge_mode = resolve_mode()
         project_root = os.environ.get("IMAGE_PROJECT_ROOT", "(current directory)")
         executable_ready = bool(configured_image_exe and Path(configured_image_exe).is_file())
-        connection = f"Image program {'ready' if executable_ready else 'not configured'}: {configured_image_exe or 'set IMAGE_PROGRAM_EXE'}"
+        connection = f"Image program {'ready' if executable_ready else 'not configured'}: {configured_image_exe or '이미지 프로그램 설정… 에서 선택'}"
         self.image_run_summary = tk.StringVar(value=f"{connection} · bridge mode: {bridge_mode} · project root: {project_root}")
         self.image_prompt = tk.StringVar()
         self.image_edit_instruction = tk.StringVar()
@@ -1275,7 +1276,8 @@ def main():
         app = App()
         try:
             code = main_self_test(app, sys.argv[2], _argument("--capture"), _argument("--report"),
-                                  "--bridge-generate" in sys.argv)
+                                  "--bridge-generate" in sys.argv, bridge_prompt=_argument("--bridge-prompt"),
+                                  keep_dir=_argument("--keep-dir"))
         finally:
             app.destroy()
         raise SystemExit(code)

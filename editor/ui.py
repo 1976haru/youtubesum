@@ -192,6 +192,7 @@ class ProEditor(ttk.Frame):
         tools.columnconfigure(0, weight=1); tools.columnconfigure(1, weight=1)
         bridge = self._section(parent, "Image Bridge")
         ttk.Label(bridge, text="배경만 교체하고 텍스트·배지 레이어는 유지합니다.", wraplength=250).pack(anchor="w", padx=3)
+        ttk.Button(bridge, text="이미지 프로그램 설정…", command=self.choose_image_program).pack(fill="x", padx=3, pady=1)
         for text, command in (("배경 생성", self.bridge_generate), ("배경 편집", self.bridge_edit),
                               ("image에서 새로고침", self.bridge_refresh)):
             button = ttk.Button(bridge, text=text, command=command); button.pack(fill="x", padx=3, pady=1)
@@ -411,9 +412,8 @@ class ProEditor(ttk.Frame):
         flags = " · ".join(f"{name} {'✓' if status.get(key) else '–'}" for key, name in (
             ("clean_canvas", "canvas"), ("subjects", "subjects"), ("safe_zones", "safe"), ("palette", "palette"),
             ("manifest", "manifest")))
-        program = os.environ.get("IMAGE_PROGRAM_EXE", "")
-        ready = "연결됨" if program and Path(program).is_file() else "IMAGE_PROGRAM_EXE 미설정"
-        return f"{Path(bridge['folder']).name}: {flags} · {ready}"
+        from image_program import summary
+        return f"{Path(bridge['folder']).name}: {flags} · {summary()}"
 
     def open_project_file(self, path: str | None = None) -> None:
         path = path or filedialog.askopenfilename(filetypes=[("Thumbnail project", "*.json")])
@@ -1540,6 +1540,20 @@ class ProEditor(ttk.Frame):
     def _set_bridge_buttons(self, enabled: bool) -> None:
         for button in self._bridge_buttons:
             button.configure(state="normal" if enabled else "disabled")
+
+    def choose_image_program(self, path: str | None = None) -> str | None:
+        """Pick the image program EXE once; saved per user so no environment variable is needed."""
+        from image_program import resolve_program, save_program
+        current = resolve_program()[0]
+        path = path or filedialog.askopenfilename(
+            title="이미지 프로그램 선택 (예: CoverMorphStudio.exe)", filetypes=[("Program", "*.exe"), ("All", "*.*")],
+            initialdir=str(Path(current).parent) if current else None)
+        if not path:
+            return None
+        save_program(path)
+        self.bridge_status.set(self._bridge_summary() if self.state.bridge.get("folder") else f"이미지 프로그램: {Path(path).name}")
+        self.message.set(f"이미지 프로그램을 저장했습니다: {path}")
+        return path
 
     def bridge_generate(self) -> None:
         self._bridge_launch("generate")
