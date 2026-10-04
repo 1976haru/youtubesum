@@ -66,7 +66,7 @@ class ProEditor(ttk.Frame):
         self.slot_var = tk.StringVar(value="A")
         self.image_prompt = tk.StringVar()
         self.image_edit_instruction = tk.StringVar()
-        self.bridge_status = tk.StringVar(value="Image Bridge: 프로젝트 폴더를 열면 활성화됩니다.")
+        self.bridge_status = tk.StringVar(value="AI 배경: 만들기 화면에서 이미지를 고르면 연결됩니다.")
         self.timing = tk.StringVar(value="")
         self.meter_text = tk.StringVar(value="가독성: —")
         self.fallback_text = tk.StringVar(value="")
@@ -135,7 +135,7 @@ class ProEditor(ttk.Frame):
         ttk.Checkbutton(bar, text="자동저장", variable=self.autosave, command=self._autosave_toggled).pack(side="right")
         bridge = ttk.Frame(self); bridge.pack(fill="x", padx=4, pady=1)
         for text, command in (("배경 생성", self.bridge_generate), ("배경 편집", self.bridge_edit),
-                              ("image에서 새로고침", self.bridge_refresh)):
+                              ("배경 새로고침", self.bridge_refresh)):
             button = ttk.Button(bridge, text=text, command=command); button.pack(side="left", padx=1)
             self._bridge_buttons.append(button)
         ttk.Label(bridge, text=" 프롬프트").pack(side="left")
@@ -172,7 +172,7 @@ class ProEditor(ttk.Frame):
                 fill="x", padx=3, pady=2)
         self.recent_styles_frame = self._section(parent, "최근 · 즐겨찾기 스타일")
         self.style_frames = {}
-        for channel_name in ("Tokyo Chill", "OLD POP LOUNGE"):
+        for channel_name in ("Tokyo Chill", "OLD POP LOUNGE", "Shopify"):
             frame = self._section(parent, f"타이포 프리셋 · {channel_name}")
             self.style_frames[channel_name] = frame
         effects = self._section(parent, "텍스트 스타일 카드")
@@ -190,11 +190,10 @@ class ProEditor(ttk.Frame):
             ttk.Button(tools, text=text, command=command).grid(row=3 + index // 2, column=index % 2, sticky="ew",
                                                                  padx=2, pady=1)
         tools.columnconfigure(0, weight=1); tools.columnconfigure(1, weight=1)
-        bridge = self._section(parent, "Image Bridge")
+        bridge = self._section(parent, "AI 배경")
         ttk.Label(bridge, text="배경만 교체하고 텍스트·배지 레이어는 유지합니다.", wraplength=250).pack(anchor="w", padx=3)
-        ttk.Button(bridge, text="이미지 프로그램 설정…", command=self.choose_image_program).pack(fill="x", padx=3, pady=1)
         for text, command in (("배경 생성", self.bridge_generate), ("배경 편집", self.bridge_edit),
-                              ("image에서 새로고침", self.bridge_refresh)):
+                              ("배경 새로고침", self.bridge_refresh)):
             button = ttk.Button(bridge, text=text, command=command); button.pack(fill="x", padx=3, pady=1)
             self._bridge_buttons.append(button)
         reference = self._section(parent, "참고 썸네일 (비교 전용)")
@@ -407,13 +406,12 @@ class ProEditor(ttk.Frame):
     def _bridge_summary(self) -> str:
         bridge = self.state.bridge or {}
         if not bridge.get("folder"):
-            return "Image Bridge: 로컬 이미지 모드"
+            return "AI 배경: 내 이미지로 편집 중"
         status = bridge.get("status", {})
-        flags = " · ".join(f"{name} {'✓' if status.get(key) else '–'}" for key, name in (
-            ("clean_canvas", "canvas"), ("subjects", "subjects"), ("safe_zones", "safe"), ("palette", "palette"),
-            ("manifest", "manifest")))
+        info = "피사체·글자 안전영역 정보 준비됨" if status.get("subjects") and status.get("safe_zones") else "기본 배치 사용"
         from image_program import summary
-        return f"{Path(bridge['folder']).name}: {flags} · {summary()}"
+        engine = "AI 엔진 연결됨" if summary().startswith("연결됨") else "AI 엔진 연결 필요 (설정)"
+        return f"AI 배경 · {info} · {engine}"
 
     def open_project_file(self, path: str | None = None) -> None:
         path = path or filedialog.askopenfilename(filetypes=[("Thumbnail project", "*.json")])
@@ -613,13 +611,20 @@ class ProEditor(ttk.Frame):
     def _apply_zoom(self) -> None:
         width, height = max(200, self.canvas.winfo_width()), max(150, self.canvas.winfo_height())
         choice = self.zoom_choice.get()
-        zoom = geo.fit_zoom(width, height) if choice == "Fit" else float(choice.rstrip("%")) / 100
-        self.view = geo.centered_view(zoom, width, height)
-        total_w = max(width, 1280 * zoom + 2 * self.view.origin_x)
-        total_h = max(height, 720 * zoom + 2 * self.view.origin_y)
+        cw, ch = self._canvas_size()
+        zoom = geo.fit_zoom(width, height, cw, ch) if choice == "Fit" else float(choice.rstrip("%")) / 100
+        self.view = geo.centered_view(zoom, width, height, cw, ch)
+        total_w = max(width, cw * zoom + 2 * self.view.origin_x)
+        total_h = max(height, ch * zoom + 2 * self.view.origin_y)
         self.canvas.configure(scrollregion=(0, 0, total_w, total_h))
         self.state.zoom = choice
         self._display()
+
+    def _canvas_size(self) -> tuple[int, int]:
+        document = self.document
+        if document is None:
+            return 1280, 720
+        return int(document.canvas_width), int(document.canvas_height)
 
     def _redraw_overlay(self) -> None:
         canvas = self.canvas
@@ -628,6 +633,8 @@ class ProEditor(ttk.Frame):
         if document is None:
             return
         view = self.view
+        cw, ch = self._canvas_size()
+        youtube = (cw, ch) == (1280, 720)
 
         def rect(box, **options):
             x, y, w, h = box
@@ -635,11 +642,17 @@ class ProEditor(ttk.Frame):
             canvas.create_rectangle(x0, y0, x1, y1, tags=("overlay",), **options)
 
         if self.show_safe.get():
-            rect((geo.SAFE_MARGIN_X, geo.SAFE_MARGIN_Y, 1280 - 2 * geo.SAFE_MARGIN_X, 720 - 2 * geo.SAFE_MARGIN_Y),
+            rect((geo.SAFE_MARGIN_X, geo.SAFE_MARGIN_Y, cw - 2 * geo.SAFE_MARGIN_X, ch - 2 * geo.SAFE_MARGIN_Y),
                  outline="#5fd3ff", dash=(4, 4))
-            rect(geo.TIMESTAMP_BOX, outline="#ff6b6b", dash=(2, 3))
-            x, y = view.to_view(geo.TIMESTAMP_BOX[0] + 4, geo.TIMESTAMP_BOX[1] + 4)
-            canvas.create_text(x, y, anchor="nw", text="재생시간", fill="#ff6b6b", font=("Segoe UI", 8), tags=("overlay",))
+            if youtube:  # the YouTube timestamp only exists on video thumbnails
+                rect(geo.TIMESTAMP_BOX, outline="#ff6b6b", dash=(2, 3))
+                x, y = view.to_view(geo.TIMESTAMP_BOX[0] + 4, geo.TIMESTAMP_BOX[1] + 4)
+                canvas.create_text(x, y, anchor="nw", text="재생시간", fill="#ff6b6b", font=("Segoe UI", 8), tags=("overlay",))
+            for zone in document.metadata.get("text_regions", []):
+                rect(zone, outline="#4ade80", dash=(6, 3), width=2)
+                x, y = view.to_view(zone[0] + 4, zone[1] + 4)
+                canvas.create_text(x, y, anchor="nw", text="글자 안전 영역", fill="#4ade80", font=("Segoe UI", 8),
+                                   tags=("overlay",))
             for zone in document.safe_zones:
                 rect(zone, outline="#ff3d6e", dash=(6, 3), width=2)
                 x, y = view.to_view(zone[0] + 4, zone[1] + 4)
@@ -653,19 +666,19 @@ class ProEditor(ttk.Frame):
                                    tags=("overlay",))
         if self.show_thirds.get():
             for fraction in (1 / 3, 2 / 3):
-                canvas.create_line(*view.to_view(1280 * fraction, 0), *view.to_view(1280 * fraction, 720),
+                canvas.create_line(*view.to_view(cw * fraction, 0), *view.to_view(cw * fraction, ch),
                                    fill="#8f96a3", dash=(2, 4), tags=("overlay",))
-                canvas.create_line(*view.to_view(0, 720 * fraction), *view.to_view(1280, 720 * fraction),
+                canvas.create_line(*view.to_view(0, ch * fraction), *view.to_view(cw, ch * fraction),
                                    fill="#8f96a3", dash=(2, 4), tags=("overlay",))
         if self.show_center.get():
-            canvas.create_line(*view.to_view(640, 0), *view.to_view(640, 720), fill="#c084fc", dash=(5, 3), tags=("overlay",))
-            canvas.create_line(*view.to_view(0, 360), *view.to_view(1280, 360), fill="#c084fc", dash=(5, 3), tags=("overlay",))
+            canvas.create_line(*view.to_view(cw / 2, 0), *view.to_view(cw / 2, ch), fill="#c084fc", dash=(5, 3), tags=("overlay",))
+            canvas.create_line(*view.to_view(0, ch / 2), *view.to_view(cw, ch / 2), fill="#c084fc", dash=(5, 3), tags=("overlay",))
         if self._drag and self._drag.get("guides"):
             for axis, value in self._drag["guides"]:
                 if axis == "x":
-                    canvas.create_line(*view.to_view(value, 0), *view.to_view(value, 720), fill="#ff4fd8", tags=("overlay",))
+                    canvas.create_line(*view.to_view(value, 0), *view.to_view(value, ch), fill="#ff4fd8", tags=("overlay",))
                 else:
-                    canvas.create_line(*view.to_view(0, value), *view.to_view(1280, value), fill="#ff4fd8", tags=("overlay",))
+                    canvas.create_line(*view.to_view(0, value), *view.to_view(cw, value), fill="#ff4fd8", tags=("overlay",))
         layer = self.selected_layer()
         if layer is not None and layer.visible:
             points = [view.to_view(*point) for point in geo.corners(layer)]
@@ -723,7 +736,8 @@ class ProEditor(ttk.Frame):
                                                                       "shadow_x", "shadow_y", "shadow_blur", "glow_blur",
                                                                       "letter_spacing", "border_width", "padding",
                                                                       "radius") if hasattr(layer, key)},
-                      "targets": geo.snap_targets(self.document, {layer.id}), "guides": [], "moved": False}
+                      "targets": geo.snap_targets(self.document, {layer.id}, self._canvas_size()), "guides": [],
+                      "moved": False}
 
     def _motion(self, event) -> None:
         drag = self._drag
@@ -996,15 +1010,16 @@ class ProEditor(ttk.Frame):
         anchor = self.selected_layer()
         if anchor is None or anchor.type not in ("text", "badge"):
             anchor = document.by_role("main_title")
+        cw, ch = (float(v) for v in self._canvas_size())
         if kind == "vignette":
-            box = (0.0, 0.0, 1280.0, 720.0)
+            box = (0.0, 0.0, cw, ch)
         elif anchor is not None:
             x, y, w, h = geo.aabb(anchor)
             pad = 28.0 if kind in ("plate", "blur_plate", "label_strip") else 120.0
             box = (x - pad, y - pad * 0.6, w + 2 * pad, h + 1.2 * pad)
             if kind in ("gradient_black", "gradient_white"):
-                box = (0.0, max(0.0, y - 120), 1280.0, 720.0 - max(0.0, y - 120)) if y > 300 else \
-                      (0.0, 0.0, 1280.0, min(720.0, y + h + 120))
+                box = (0.0, max(0.0, y - 120), cw, ch - max(0.0, y - 120)) if y > ch * 0.42 else \
+                      (0.0, 0.0, cw, min(ch, y + h + 120))
         else:
             box = (340.0, 220.0, 600.0, 280.0)
         defaults = {"gradient_black": dict(color="#000000", strength=0.65, blur=60, radius=0,
@@ -1068,7 +1083,7 @@ class ProEditor(ttk.Frame):
             elif layer.type in ("image", "background"):
                 frame = self._group(parent, "이미지")
                 ttk.Label(frame, text=Path(layer.source).name if not layer.source.startswith("asset://")
-                          else "생성된 A/B/C 배경 (Image Bridge로 교체)", wraplength=300).grid(row=0, column=0, columnspan=3,
+                          else "생성된 A/B/C 배경 (AI 배경으로 교체)", wraplength=300).grid(row=0, column=0, columnspan=3,
                                                                                          sticky="w", padx=4)
                 self._choice(frame, 1, "맞춤", "fit", ("cover", "contain", "stretch"))
         finally:
@@ -1564,7 +1579,7 @@ class ProEditor(ttk.Frame):
     def _bridge_launch(self, action: str) -> None:
         folder = self.state.bridge.get("folder")
         if not folder:
-            messagebox.showinfo("Image Bridge", "먼저 이미지 프로젝트 폴더를 여세요.")
+            messagebox.showinfo("AI 배경", "먼저 만들기 화면에서 이미지를 고르거나 프로젝트를 여세요.")
             return
         if self._bridge_running:
             return
@@ -1576,14 +1591,14 @@ class ProEditor(ttk.Frame):
         prompt, instruction = self.image_prompt.get().strip(), self.image_edit_instruction.get().strip()
         self._bridge_running = True
         self._set_bridge_buttons(False)
-        self.bridge_status.set(f"이미지 프로그램 {action} 실행 중… (GUI는 계속 사용 가능)")
+        self.bridge_status.set("AI 배경을 만드는 중… (다른 편집은 계속할 수 있습니다)")
 
         def work():
             try:
                 result = launch_generate(folder, prompt, options) if action == "generate" else \
                     launch_edit(folder, instruction, options)
             except Exception as exc:
-                result = LaunchResult(False, f"Image Bridge failed safely: {exc}", action=action, project_dir=Path(folder))
+                result = LaunchResult(False, f"AI 배경 작업이 실패했습니다(기존 배경 유지): {exc}", action=action, project_dir=Path(folder))
             self._bridge_queue.put(("bridge", (action, result)))
         threading.Thread(target=work, name=f"pro-bridge-{action}", daemon=True).start()
 
@@ -1592,7 +1607,7 @@ class ProEditor(ttk.Frame):
         self._set_bridge_buttons(True)
         if not result.launched:
             self.bridge_status.set(f"{action} 실패 · 기존 배경/레이어 유지: {result.message[:120]}")
-            messagebox.showerror("Image Bridge", result.message)
+            messagebox.showerror("AI 배경", result.message)
             return
         self.bridge_refresh(after_action=action)
 
@@ -1600,12 +1615,12 @@ class ProEditor(ttk.Frame):
         """Re-read canvas + sidecars and replace only the background layers."""
         folder = self.state.bridge.get("folder")
         if not folder or not self.state.documents:
-            messagebox.showinfo("Image Bridge", "먼저 이미지 프로젝트 폴더를 여세요.")
+            messagebox.showinfo("AI 배경", "먼저 만들기 화면에서 이미지를 고르거나 프로젝트를 여세요.")
             return None
         self._flush_edit()
         project = load_image_project(folder)
         if project.source_image is None:
-            messagebox.showwarning("Image Bridge", "새 캔버스를 찾지 못했습니다. 기존 배경을 유지합니다.")
+            messagebox.showwarning("AI 배경", "새 배경을 찾지 못했습니다. 기존 배경을 유지합니다.")
             return None
         points = project.subject_points or {}
         generated = create_candidate_images(str(project.source_image), self.state.channel, TEMPLATE_MODE, "자동",
@@ -1670,6 +1685,8 @@ class ProEditor(ttk.Frame):
 
 def _channel_name(value, fallback: str) -> str:
     value = str(value or "").strip().casefold().replace("_", " ").replace("-", " ")
+    if value in ("shopify", "shop", "store"):
+        return "Shopify"
     if value in ("old pop lounge", "oldpoplounge", "old pop"):
         return "OLD POP LOUNGE"
     if value in ("tokyo chill", "tokyo"):

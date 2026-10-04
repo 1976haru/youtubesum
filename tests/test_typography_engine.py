@@ -13,7 +13,8 @@ class TypographyEngineTests(unittest.TestCase):
         old = ("Senior Classic", "Warm Gold", "First Snow", "Autumn Lounge", "Christmas Glow", "Calm Blue Memory")
         self.assertEqual(tokyo, preset_names("Tokyo Chill"))
         self.assertEqual(old, preset_names("OLD POP LOUNGE"))
-        self.assertEqual(12, len(TYPOGRAPHY_PRESETS))
+        self.assertEqual(16, len(TYPOGRAPHY_PRESETS))          # 6 Tokyo + 6 OLD POP + 4 Shopify (v1.1)
+        self.assertEqual(4, len(PRESETS_BY_CHANNEL["Shopify"]))
         self.assertEqual(6, len(PRESETS_BY_CHANNEL["Tokyo Chill"]))
         self.assertEqual(6, len(PRESETS_BY_CHANNEL["OLD POP LOUNGE"]))
 

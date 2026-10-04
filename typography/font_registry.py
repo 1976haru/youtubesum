@@ -19,6 +19,7 @@ PREFERRED_FAMILIES = {
                     "Malgun Gothic", "Noto Sans KR", "Segoe UI", "Arial", "Noto Sans"),
     "OLD POP LOUNGE": ("Malgun Gothic", "Noto Sans KR", "Yu Gothic UI", "Yu Gothic", "Meiryo",
                        "Noto Sans JP", "BIZ UDPGothic", "Segoe UI", "Arial", "Noto Sans"),
+    "Shopify": ("Segoe UI", "Arial", "Malgun Gothic", "Noto Sans KR", "Yu Gothic UI", "Noto Sans JP", "Noto Sans"),
 }
 SCRIPT_FAMILIES = {
     "ja": ("Yu Gothic UI", "Yu Gothic", "Meiryo", "Noto Sans JP", "BIZ UDPGothic"),

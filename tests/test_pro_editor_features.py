@@ -37,7 +37,7 @@ class ProEditorFeatureTests(unittest.TestCase):
         cls.folder = Path(cls.temp.name) / "브리지 プロジェクト space"
         shutil.copytree(EXAMPLES / "tokyo_chill_project", cls.folder)
         cls.editor = cls.app.pro_editor
-        cls.app.notebook.select(cls.editor)
+        cls.app.show_page("editor")
         cls.app.update()
         cls.editor.open_project_folder(str(cls.folder), synchronous=True)
         cls.app.update()
@@ -121,7 +121,7 @@ class ProEditorFeatureTests(unittest.TestCase):
         editor.apply_palette("#FFFFFF", "#0B1F33", "#5FD3FF")
         self.assertEqual(("#FFFFFF", "#0B1F33", "#5FD3FF"), (title.fill, title.outline_color, title.highlight_color))
         editor._build_style_cards(); self.pump()
-        self.assertEqual(12, len(editor._style_photos))
+        self.assertEqual(16, len(editor._style_photos))  # 6 Tokyo + 6 OLD POP + 4 Shopify
         editor.apply_style("Warm Gold", "OLD POP LOUNGE")
         self.assertIn("OLD POP LOUNGE|Warm Gold", editor.settings.recent_styles)
         editor.apply_channel_preset("OLD POP LOUNGE")

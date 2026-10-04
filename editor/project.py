@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 from thumbnail_engine import APP_VERSION, STRATEGIES, TEMPLATE_MODE, create_candidate_images
@@ -104,7 +105,20 @@ def preset_text_props(style_name: str, channel: str, palette: dict | None = None
             "glow_color": preset.glow, "glow_blur": float(preset.glow_blur),
             "glow_opacity": round((0.55 if tokyo else 0.22) * float(palette.get("glow_strength") or 1.0), 2),
             "letter_spacing": float(preset.letter_spacing),
-            "highlight_color": palette.get("highlight_color") or preset.accent}
+            "highlight_color": _readable_highlight(palette.get("highlight_color"), preset.accent)}
+
+
+def _luma(color: str) -> float:
+    try:
+        r, g, b = (int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, AttributeError):
+        return 255.0
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _readable_highlight(color: str | None, accent: str) -> str:
+    """Image palettes can hand back a near-black accent; on light title text that reads as a hole."""
+    return color if color and _luma(color) >= 90 else accent
 
 
 # One-click text effect cards (applied on top of the current colours).
@@ -123,6 +137,8 @@ CHANNEL_PALETTES = {
                     ("Cinema Gold", "#FFFFFF", "#141414", "#FFD34D"), ("Pink Haze", "#FFF6FB", "#3A1030", "#FF8FB8")),
     "OLD POP LOUNGE": (("Warm Cream", "#FFF4DC", "#3A2618", "#F2C46B"), ("First Snow", "#FFFFFF", "#1E354A", "#B9E8FF"),
                        ("Autumn", "#FFF4E3", "#3C271B", "#D99151"), ("Calm Navy", "#F7FBFF", "#233648", "#A7C9E6")),
+    "Shopify": (("Clean White", "#FFFFFF", "#1B1B1B", "#F5F5F5"), ("Ink", "#1E1E1E", "#FFFFFF", "#B08D57"),
+                ("Warm Sand", "#FFF8EE", "#3A2A1C", "#E0A867"), ("Sale Red", "#FFFFFF", "#7A1712", "#E4402F")),
 }
 
 
@@ -275,6 +291,117 @@ def generate_project(source: str | Path, channel: str, style: str, texts: dict[s
         state.defaults[slot] = document.to_dict()
         title = document.by_role("main_title")
         state.selected_layers[slot] = title.id if title else None
+    return state
+
+
+SHOP_LAYOUTS = ("preset", "mirror", "top")
+
+
+def _shop_region(region, variant: str):
+    x, y, w, h = region
+    if variant == "mirror":
+        return (1.0 - x - w, y, w, h) if w < 0.6 else (x, 1.0 - y - h, w, h)
+    if variant == "top":
+        return (0.08, 0.06, 0.84, 0.22)
+    return region
+
+
+def default_shop_document(slot: str, background_key: str, size: tuple[int, int], texts: dict[str, str],
+                          text_region, cta_region=None, subject_boxes=(), style_name: str = "Clean White",
+                          purpose: str = "") -> ThumbnailDocument:
+    """Shopify layout: headline / subheadline / optional CTA in the preset's text-safe region (A), mirrored (B),
+    or a top band (C). No YouTube badges."""
+    width, height = size
+    variant = SHOP_LAYOUTS[SLOTS.index(slot)]
+    subjects = _px_boxes(subject_boxes, width, height)
+    rx, ry, rw, rh = _shop_region(text_region, variant)
+    box = (rx * width, ry * height, rw * width, rh * height)
+    if variant == "mirror" and any(overlap_ratio(box, subject) > 0.05 for subject in subjects):
+        variant = "bottom"   # the mirrored side holds the product/subject: use a bottom band instead
+        rx, ry, rw, rh = (0.08, 0.72, 0.84, 0.22)
+        box = (rx * width, ry * height, rw * width, rh * height)
+    preset = get_preset(style_name, "Shopify")
+    document = ThumbnailDocument(canvas_width=width, canvas_height=height, channel="Shopify", candidate_type=f"SHOP_{slot}",
+                                 subject_boxes=subjects, safe_zones=[],
+                                 metadata={"style": preset.name, "style_key": preset.key, "slot": slot, "kind": "shopify",
+                                           "purpose": purpose, "text_regions": [list(box)]})
+    document.add(BackgroundLayer(name="배경", role="background", source=background_key, width=width, height=height))
+    common = {"channel": "Shopify", "fill": preset.fill, "gradient": False, "outline_color": preset.outline,
+              "outline_width": float(preset.outline_width), "shadow_color": preset.shadow, "shadow_opacity": 0.45,
+              "shadow_blur": float(preset.shadow_blur), "shadow_x": 0.0, "shadow_y": 3.0, "glow_opacity": 0.0,
+              "letter_spacing": float(preset.letter_spacing), "highlight_color": preset.accent, "highlight_word": ""}
+    align = "center" if variant == "top" or rw > 0.7 else "left"
+    headline_text = (texts.get("title") or "New Collection").strip()
+    headline_size = max(36.0, min(box[3] * 0.42, height * 0.10))
+    headline = TextLayer(name="헤드라인", role="main_title", text=headline_text, x=box[0], y=box[1], width=box[2],
+                         height=headline_size * 1.3, font_size=headline_size, font_weight=800, line_spacing=1.08,
+                         alignment=align, max_lines=2, **common)
+    sync_text_height(headline, keep_center=False)
+    document.add(headline)
+    cursor = headline.y + headline.height + headline_size * 0.18
+    sub_text = (texts.get("subtitle") or "").strip()
+    if sub_text:
+        subline = TextLayer(name="서브헤드", role="subtitle", text=sub_text, x=box[0], y=cursor, width=box[2],
+                            height=headline_size * 0.7, font_size=headline_size * 0.42, font_weight=600,
+                            max_lines=2, alignment=align, **{**common, "outline_width": 0.0})
+        sync_text_height(subline, keep_center=False)
+        document.add(subline)
+        cursor = subline.y + subline.height + headline_size * 0.25
+    cta_text = (texts.get("cta") or "").strip()
+    if cta_text:
+        bw, bh = max(180.0, width * 0.16), max(52.0, height * 0.07)
+        if cta_region and variant == "preset":
+            cx, cy, cw_, ch_ = cta_region
+            bx, by = cx * width, cy * height
+        else:
+            bx = box[0] if align == "left" else box[0] + (box[2] - bw) / 2
+            by = min(height - bh - 24, cursor)
+        document.add(BadgeLayer(name="버튼(CTA)", role="cta", text=cta_text, channel="Shopify", shape="pill",
+                                x=bx, y=by, width=bw, height=bh, fill="#111111", text_color="#FFFFFF",
+                                border_color="#111111", border_width=0.0, font_size=bh * 0.42))
+    return document
+
+
+def _adapt_to_background(document: ThumbnailDocument, gray: np.ndarray) -> None:
+    """Dark type on bright areas, light type on dark areas; CTA pill inverts to stay visible."""
+    height, width = gray.shape[:2]
+    for layer in document.ordered():
+        if layer.type not in ("text", "badge"):
+            continue
+        x, y, w, h = (int(max(0, v)) for v in (layer.x, layer.y, layer.width, layer.height))
+        region = gray[y:min(height, y + max(h, 1)), x:min(width, x + max(w, 1))]
+        if region.size == 0:
+            continue
+        brightness = float(region.mean())
+        if layer.type == "badge":
+            if brightness < 140:
+                layer.fill, layer.text_color, layer.border_color = "#FFFFFF", "#111111", "#FFFFFF"
+        elif brightness > 165:
+            layer.fill, layer.gradient_end, layer.outline_color = "#1E1E1E", "#1E1E1E", "#FFFFFF"
+            layer.outline_width, layer.shadow_opacity = 0.0, 0.12
+
+
+def generate_shop_project(source: str | Path, size: tuple[int, int], texts: dict[str, str], *, text_region,
+                          cta_region=None, subject_boxes=(), palette: dict | None = None, bridge: dict | None = None,
+                          purpose: str = "", style: str = "Clean White") -> ProjectState:
+    """Shopify project: the chosen image at its native size with three text layouts (A/B/C)."""
+    image = read_image(source)
+    if image is None:
+        raise ValueError(f"이미지를 열 수 없습니다: {source}")
+    if (image.shape[1], image.shape[0]) != tuple(size):
+        image = cv2.resize(image, tuple(size), interpolation=cv2.INTER_AREA)
+    state = ProjectState(channel="Shopify", style=style, texts=dict(texts), source_background=str(source),
+                         palette=dict(palette or {}), bridge=dict(bridge or {}))
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    for slot in SLOTS:
+        key = state.register_image(slot, image)
+        document = default_shop_document(slot, key, tuple(size), texts, text_region, cta_region, subject_boxes,
+                                         style, purpose)
+        _adapt_to_background(document, gray)
+        state.documents[slot] = document
+        state.defaults[slot] = document.to_dict()
+        headline = document.by_role("main_title")
+        state.selected_layers[slot] = headline.id if headline else None
     return state
 
 

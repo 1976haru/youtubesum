@@ -41,6 +41,14 @@ _OLD = (
     ("calm_blue_memory", "Calm Blue Memory", "#F7FBFF", "#C8E2F5", "#A7C9E6", "#233648", "#101E2C", "#8DBADB", 8, 5, 4, 0.0),
 )
 
+# Store imagery: clean product-page type (thin outline, soft shadow, no neon glow).
+_SHOP = (
+    ("shop_clean_white", "Clean White", "#FFFFFF", "#FFFFFF", "#F5F5F5", "#1B1B1B", "#000000", "#FFFFFF", 2, 10, 0, 0.4),
+    ("shop_editorial_dark", "Editorial Dark", "#1E1E1E", "#1E1E1E", "#B08D57", "#FFFFFF", "#FFFFFF", "#FFFFFF", 0, 6, 0, 0.6),
+    ("shop_warm_neutral", "Warm Neutral", "#FFF8EE", "#F3E3CC", "#E0A867", "#3A2A1C", "#1E140C", "#E0A867", 2, 9, 0, 0.3),
+    ("shop_bold_sale", "Bold Sale", "#FFFFFF", "#FFE7E2", "#E4402F", "#7A1712", "#2A0806", "#E4402F", 4, 8, 0, 0.0),
+)
+
 
 def _make(row, channel: str, senior: bool) -> TextStyle:
     key, name, fill, end, accent, outline, shadow, glow, stroke, shadow_blur, glow_blur, spacing = row
@@ -51,9 +59,11 @@ def _make(row, channel: str, senior: bool) -> TextStyle:
 
 TYPOGRAPHY_PRESETS = {row[0]: _make(row, "Tokyo Chill", False) for row in _TOKYO}
 TYPOGRAPHY_PRESETS.update({row[0]: _make(row, "OLD POP LOUNGE", True) for row in _OLD})
+TYPOGRAPHY_PRESETS.update({row[0]: _make(row, "Shopify", False) for row in _SHOP})
 PRESETS_BY_CHANNEL = {
     "Tokyo Chill": tuple(TYPOGRAPHY_PRESETS[row[0]] for row in _TOKYO),
     "OLD POP LOUNGE": tuple(TYPOGRAPHY_PRESETS[row[0]] for row in _OLD),
+    "Shopify": tuple(TYPOGRAPHY_PRESETS[row[0]] for row in _SHOP),
 }
 
 
