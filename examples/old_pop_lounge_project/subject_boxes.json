@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "coordinate_space": "normalized",
+  "subjects": [
+    {
+      "role": "protagonist",
+      "bbox": [
+        0.18,
+        0.2,
+        0.24,
+        0.56
+      ]
+    }
+  ]
+}

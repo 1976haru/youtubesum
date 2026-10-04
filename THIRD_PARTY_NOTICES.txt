@@ -1,0 +1,21 @@
+Third-party software notice
+===========================
+
+This application bundles FFmpeg n9.0.2-3-ga5923073bf (Windows x86_64 shared LGPL build, 2026-09-23) from BtbN/FFmpeg-Builds.
+FFmpeg is configured without GPL-only libraries; libx264/libx265 are disabled. The Motion H.264 encoder is Windows Media Foundation (h264_mf).
+FFmpeg is licensed under GNU LGPL version 3. The bundled FFmpeg executable and its dynamically loaded FFmpeg libraries are separate replaceable files within the packaged runtime. The complete license texts are bundled as third_party/LICENSE.txt and third_party/COPYING.GPLv3.
+
+FFmpeg source code: https://github.com/FFmpeg/FFmpeg/tree/n9.0.2
+Corresponding Windows build scripts/release: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-23-14-55
+FFmpeg configuration can be inspected with: ffmpeg -version
+An ABI-compatible replacement bundle can be placed in a directory named ydts_ffmpeg beside the application executable; it takes priority over the embedded copy.
+
+The BtbN archive SHA-256 is pinned by scripts/prepare_ffmpeg.ps1. No binary is downloaded at application runtime.
+
+The Professional Typography Engine uses the following third-party Python packages:
+- skia-python 144.0.post2: BSD-style Skia bindings; license file is bundled under third_party/python/skia-python.
+- uharfbuzz 0.56.2: Apache License 2.0; license file is bundled under third_party/python/uharfbuzz.
+- fontTools 4.56.0: MIT License; license file is bundled under third_party/python/fonttools.
+- uniseg 0.10.1: MIT License; license file is bundled under third_party/python/uniseg.
+
+These packages use their installed distribution licenses; no font files are redistributed. Fonts are read from the target system.

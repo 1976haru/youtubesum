@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "coordinate_space": "normalized",
+  "subjects": [
+    {
+      "role": "protagonist",
+      "bbox": [
+        0.54,
+        0.22,
+        0.18,
+        0.5
+      ]
+    },
+    {
+      "role": "counterpart",
+      "bbox": [
+        0.75,
+        0.28,
+        0.16,
+        0.48
+      ]
+    }
+  ]
+}

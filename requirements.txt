@@ -1,3 +1,7 @@
 Pillow>=10.0
 numpy>=1.24
 opencv-python>=4.8
+skia-python==144.0.post2
+uharfbuzz==0.56.2
+fontTools==4.56.0
+uniseg==0.10.1

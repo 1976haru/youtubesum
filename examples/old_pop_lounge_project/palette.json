@@ -1,0 +1,12 @@
+{
+  "colors": {
+    "fill": "#FFF1D0",
+    "stroke": "#241A18",
+    "accent": "#D6A657"
+  },
+  "effects": {
+    "glow": 0.35,
+    "shadow": 0.65,
+    "outline_width": 7
+  }
+}
