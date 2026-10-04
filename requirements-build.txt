@@ -6,3 +6,4 @@ skia-python==144.0.post2
 uharfbuzz==0.56.2
 fontTools==4.56.0
 uniseg==0.10.1
+tkinterdnd2==0.4.2

@@ -6,6 +6,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 import tkinter as tk
@@ -132,16 +133,20 @@ class App(tk.Tk):
         self._image_action_buttons = []
         self._image_bridge_palette = {}
         self._image_bridge_position_baselines = {}
-        header = ttk.Frame(self); header.pack(fill="x", padx=14, pady=(6, 0))
-        ttk.Label(header, text="YOUTUBE DYNAMIC THUMBNAIL STUDIO", font=("Segoe UI", 15, "bold")).pack(side="left")
-        ttk.Label(header, text=f"  v{APP_VERSION} · Pro Editor · 3후보 + Motion Intro · "
-                  "Motion uses FFmpeg · LGPLv3 · ydts_ffmpeg 교체 가능", foreground="#555").pack(side="left")
-        ttk.Button(header, text="오픈소스 라이선스", command=self.show_licenses).pack(side="right")
-        notebook = ttk.Notebook(self); notebook.pack(fill="both", expand=True, padx=8, pady=6)
+        # v1.1 Unified Studio: Home / Create / Editor / Queue / History / Settings; legacy tabs live under 도구.
+        try:
+            from tkinterdnd2 import TkinterDnD
+            TkinterDnD._require(self)
+        except Exception:
+            logging.info("drag-and-drop unavailable; reference button still works")
+        from studio.ui import Studio
+        self.studio = Studio(self)
+        notebook = ttk.Notebook(self.studio.tools_container); notebook.pack(fill="both", expand=True, padx=8, pady=6)
         self.notebook = notebook
-        self._tab_pro_editor(notebook)
+        self._tab_pro_editor(self.studio.editor_container)
         self._tab_candidates(notebook); self._tab_live_composer(notebook); self._tab_motion(notebook); self._tab_history(notebook)
-        notebook.select(self.pro_editor)
+        self.studio.show("home")
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         ttk.Label(self, textvariable=self.status, wraplength=1100).pack(pady=(0, 8))
         self.src.trace_add("write", self._source_changed)
         self.source_mode.trace_add("write", lambda *_: self._update_mode_guard())
@@ -330,9 +335,32 @@ class App(tk.Tk):
             else: self.counterpart = selection["point"]
             self.focus_source = source; self._update_focus_state(); self._invalidate_candidates(); dialog.destroy()
 
-    def _tab_pro_editor(self, notebook):
-        self.pro_editor = ProEditor(notebook, settings_path=APP_HOME / "editor_settings.json", status=self.status)
-        notebook.add(self.pro_editor, text="★ Pro Editor")
+    def _tab_pro_editor(self, parent):
+        self.pro_editor = ProEditor(parent, settings_path=APP_HOME / "editor_settings.json", status=self.status)
+        if isinstance(parent, ttk.Notebook):
+            parent.add(self.pro_editor, text="★ Pro Editor")
+        else:
+            self.pro_editor.pack(fill="both", expand=True)
+
+    def show_page(self, key: str) -> None:
+        self.studio.show(key)
+
+    def on_close_quiet(self):
+        """Close like the window's X button without asking (self-tests)."""
+        if getattr(self, "studio", None) is not None:
+            self.studio.shutdown()
+            deadline = time.time() + 30
+            while self.studio.runner.current is not None and time.time() < deadline:
+                self.update(); time.sleep(0.1)
+
+    def on_close(self):
+        studio = getattr(self, "studio", None)
+        if studio is not None and studio.runner.current is not None:
+            if not messagebox.askyesno("작업 중", "이미지를 만드는 중입니다. 종료하면 이 작업은 다음 실행 때 처음부터 다시 진행됩니다. 종료할까요?"):
+                return
+        if studio is not None:
+            studio.shutdown()
+        self.destroy()
 
     def _tab_candidates(self, notebook):
         tab = ttk.Frame(notebook); notebook.add(tab, text="① 3후보 미리보기"); self.source_row(tab)
@@ -1270,6 +1298,20 @@ def _argument(flag):
 
 
 def main():
+    # Unified studio acceptance runs inside the real app (used for the packaged EXE).
+    if len(sys.argv) >= 3 and sys.argv[1] in ("--studio-e2e", "--studio-queue-phase"):
+        from studio.selftest import main_e2e
+        app = App()
+        app.geometry("1600x1000+10+10")
+        code = 1
+        try:
+            code = main_e2e(app, sys.argv[1:])
+        finally:
+            try:
+                app.destroy()
+            except Exception:
+                pass
+        raise SystemExit(code)
     # Full GUI smoke test of the Pro Editor (real Tk events), used for the packaged EXE.
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test-editor":
         from editor.selftest import main_self_test

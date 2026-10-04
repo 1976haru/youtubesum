@@ -63,7 +63,10 @@ def run_editor_self_test(app, project_folder: str | Path, *, capture: str | Path
                          workdir: str | Path | None = None, fonts_timeout: float = 45.0,
                          bridge_generate: bool = False, bridge_prompt: str | None = None) -> dict:
     editor = app.pro_editor
-    app.notebook.select(editor)
+    if hasattr(app, "show_page"):
+        app.show_page("editor")
+    else:
+        app.notebook.select(editor)
     app.deiconify()
     app.geometry("1600x1000+20+20")
     _pump(app, 0.3)

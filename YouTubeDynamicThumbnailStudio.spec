@@ -3,12 +3,12 @@ from pathlib import Path
 from importlib.metadata import distribution
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 datas=[]; binaries=[]; hiddenimports=[]
-for package in ('cv2','PIL','uharfbuzz','uniseg'):
+for package in ('cv2','PIL','uharfbuzz','uniseg','tkinterdnd2'):
     d,b,h=collect_all(package); datas+=d; binaries+=b; hiddenimports+=h
 # fontTools' full package collection also pulls optional scipy/matplotlib tooling.
 # Runtime font metadata inspection only needs TTFont/TTCollection and their tables.
 hiddenimports += collect_submodules('fontTools.ttLib')
-for package in ('skia-python','uharfbuzz','fonttools','uniseg'):
+for package in ('skia-python','uharfbuzz','fonttools','uniseg','tkinterdnd2'):
     dist=distribution(package)
     for item in dist.files or ():
         if 'license' in str(item).casefold() or 'notice' in str(item).casefold():
