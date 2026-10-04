@@ -424,7 +424,7 @@ def _launch(action: str, project_dir: str | Path | None, *, prompt: str = "", ed
     from image_program import resolve_mode, resolve_program
     configured = executable or resolve_program()[0]
     if not configured:
-        return LaunchResult(False, "Image program is not configured. Choose it with '이미지 프로그램 설정…' "
+        return LaunchResult(False, "Image program is not configured. Choose it in 설정 → AI 엔진 → '연결 설정…' "
                             "(or set IMAGE_PROGRAM_EXE).", action=action, project_dir=root)
     program = Path(configured).expanduser()
     if not program.is_absolute():

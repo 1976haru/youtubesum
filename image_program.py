@@ -59,7 +59,13 @@ def discover_covermorph() -> str:
 
 
 def resolve_program() -> tuple[str, str]:
-    """(path, source) with source in env | saved | covermorph | none."""
+    """(path, source) with source in bundled | env | saved | covermorph | none."""
+    import sys
+    app = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    for bundled in (app / "backend" / "CoverMorphStudio" / "CoverMorphStudio.exe",
+                    app.parent / "backend" / "CoverMorphStudio" / "CoverMorphStudio.exe"):
+        if bundled.is_file():
+            return str(bundled), "bundled"
     env = os.environ.get("IMAGE_PROGRAM_EXE", "")
     if env:
         return env, "env"
@@ -86,5 +92,5 @@ def summary() -> str:
     if not path:
         return "이미지 프로그램 미설정 ('이미지 프로그램 설정…'에서 선택)"
     ready = Path(path).is_file()
-    origin = {"env": "환경변수", "saved": "저장된 설정", "covermorph": "CoverMorph 자동 연결"}[source]
+    origin = {"bundled": "내장 엔진", "env": "환경변수", "saved": "저장된 설정", "covermorph": "자동 연결"}[source]
     return f"{'연결됨' if ready else '파일 없음'} · {Path(path).name} ({origin})"

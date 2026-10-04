@@ -76,7 +76,11 @@ class ImageBridgeTests(unittest.TestCase):
             self.assertTrue(project.warnings)
 
     def test_launcher_abstraction_reports_unconfigured_program_cleanly(self):
-        with tempfile.TemporaryDirectory() as temp:
+        # isolate program discovery: no saved setting, no CoverMorph record, no env var on this machine
+        isolated = {k: v for k, v in os.environ.items() if k != "IMAGE_PROGRAM_EXE"}
+        empty = tempfile.mkdtemp()
+        isolated.update(YDTS_DATA_DIR=empty, COVERMORPH_DATA_DIR=empty)
+        with patch.dict(os.environ, isolated, clear=True), tempfile.TemporaryDirectory() as temp:
             self.assertFalse(launch_generate(temp, executable="").launched)
             self.assertFalse(launch_edit(temp, executable="missing-image-program.exe").launched)
             exe = Path(temp) / "fake.exe"; exe.touch()

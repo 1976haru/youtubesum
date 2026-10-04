@@ -23,7 +23,7 @@ class ImageProgramTests(unittest.TestCase):
         self.assertEqual(image_program.resolve_mode(), "cli")
         result = image_bridge.launch_generate(self.tmp, "x")
         self.assertFalse(result.launched)
-        self.assertIn("이미지 프로그램 설정", result.message)
+        self.assertIn("연결 설정", result.message)
 
     def test_saved_program_survives_and_env_still_wins(self):
         exe = self.tmp / "프로그램 東京" / "CoverMorphStudio.exe"
